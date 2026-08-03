@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = ["shared", "server", "client"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/ShinThantBhoneNaing/teresa"
+authors = ["devST"]
+
+[workspace.dependencies]
+teresa-proto = { path = "shared" }
+
+# --- async runtime -----------------------------------------------------------
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# --- serialisation -----------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# --- diagnostics -------------------------------------------------------------
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# --- primitives --------------------------------------------------------------
+ulid = { version = "1", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "macros"] }
+dirs = "5"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Debug builds of the TUI are unusably slow without this: syntect and the
+# markdown parser dominate frame time when their dependencies are unoptimised.
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,40 @@
+# TERESA server configuration — every knob, with its default.
+# Run with: teresad --config server.toml
+# Env overrides: TERESA_BIND, TERESA_PORT, TERESA_DB, TERESA_LOG,
+#                TERESA_OPEN_REGISTRATION, TERESA_TLS_CERT, TERESA_TLS_KEY
+
+# Interface + port. The default binds loopback only; set 0.0.0.0 to serve a
+# network (and then configure TLS or put a TLS-terminating proxy in front).
+bind = "127.0.0.1"
+port = 7737
+
+# Shown in every client's header, and the MOTD greets each connection.
+name = "teresa"
+#motd = "no system is safe"
+
+# SQLite database file; created (with its parent directory) on first run.
+database = "teresa.db"
+
+# The first registered account becomes admin. Close registration once your
+# team is aboard; existing accounts keep working.
+open_registration = true
+
+# Channels created on first boot. New accounts auto-join the first one.
+seed_rooms = ["general", "backend", "frontend", "security", "devops", "random"]
+
+# tracing filter (RUST_LOG overrides at launch).
+log = "teresa_server=info,tower_http=warn"
+
+[tls]
+# Both or neither. PEM files; reloaded only at startup.
+#cert = "/etc/teresa/fullchain.pem"
+#key  = "/etc/teresa/privkey.pem"
+
+[limits]
+auth_per_minute = 5        # login/register attempts per IP
+messages_per_10s = 20      # posts per connection (typing/pings don't count)
+outbox_depth = 256         # buffered frames per connection before disconnect
+connections_per_user = 8   # simultaneous terminals per account
+
+[sessions]
+idle_days = 30             # sliding expiry

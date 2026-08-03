@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+
+# Local server state
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# Dev TLS material — regenerate with scripts/dev-certs.sh
+/certs/
+
+.DS_Store

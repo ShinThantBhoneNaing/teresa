@@ -1,0 +1,71 @@
+[package]
+name = "teresa-server"
+description = "TERESA chat server: authentication, persistence, rooms and message fan-out"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "teresad"
+path = "src/main.rs"
+
+[lib]
+name = "teresa_server"
+path = "src/lib.rs"
+
+[dependencies]
+teresa-proto.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+
+axum = { version = "0.8", features = ["ws", "macros"] }
+# tls-rustls-no-provider: the provider is chosen at startup (ring), not by
+# feature unification — keeps aws-lc-rs (cmake, NASM on Windows) out of the build.
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "timeout"] }
+# aws-lc-rs needs a C toolchain and cmake to build; ring compiles everywhere the
+# rest of this workspace does, which keeps installation working on a bare machine.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+] }
+
+# The bundled SQLite is deliberate: no libsqlite3 on the host, identical
+# behaviour on Linux, macOS and Windows, and no version skew between them.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "macros",
+] }
+
+# Argon2 pins its own `rand_core`. Drawing salts and session tokens from that
+# same re-export, rather than adding the `rand` crate, keeps exactly one CSPRNG
+# implementation in the binary.
+argon2 = { version = "0.5", features = ["std"] }
+sha2 = "0.10"
+base64 = "0.23"
+
+dashmap = "6"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-tungstenite = "0.30"
+tempfile = "3"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }

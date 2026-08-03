@@ -1,0 +1,65 @@
+[package]
+name = "teresa-client"
+description = "TERESA terminal client: the hacker workstation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "teresa"
+path = "src/main.rs"
+
+[lib]
+name = "teresa_client"
+path = "src/lib.rs"
+
+[dependencies]
+teresa-proto.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+
+# Terminal. Ratatui re-exports crossterm; using that re-export keeps exactly
+# one crossterm version in the build.
+# unstable-rendered-line-info: Paragraph::line_count, which the scroll-from-
+# bottom message view is built on. Version-pinned by the workspace lockfile;
+# a ratatui upgrade that changes it fails loudly at compile time.
+ratatui = { version = "0.30", features = ["crossterm", "unstable-rendered-line-info"] }
+
+# Network. Both stacks ride rustls with NO bundled provider — the binary
+# installs ring itself at startup, keeping aws-lc-rs (cmake/NASM) out of the
+# build on every platform.
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls-no-provider",
+] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+# Rendering.
+pulldown-cmark = { version = "0.13", default-features = false }
+# default-fancy = the pure-Rust regex engine; the default onig engine is a C
+# library and a cross-compilation headache.
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+unicode-width = "0.2"
+
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+time.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+teresa-server = { path = "../server" }
+axum-server = { version = "0.8" }
+tempfile = "3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
