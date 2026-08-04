@@ -351,6 +351,27 @@ mod tests {
     }
 
     #[test]
+    fn myanmar_text_passes_everywhere_it_should() {
+        // Burmese script leans hard on combining marks (U+1039 stacks,
+        // vowel signs, asat). None of them are control characters and none
+        // may be rejected or mangled.
+        let greeting = "မင်္ဂလာပါ"; // "hello"
+        assert_eq!(message_body(greeting).unwrap(), greeting);
+        assert_eq!(display_name(greeting).unwrap(), greeting);
+        assert_eq!(
+            topic("မြန်မာစာ ပရောဂျက်").unwrap().as_deref(),
+            Some("မြန်မာစာ ပရောဂျက်")
+        );
+        assert_eq!(
+            status_text("ကုဒ်ရေးနေတယ်").unwrap().as_deref(),
+            Some("ကုဒ်ရေးနေတယ်")
+        );
+        // Length limits count characters, so Myanmar clusters are not
+        // penalised for being multi-byte.
+        assert!(password("စကားဝှက်ရှစ်လုံး").is_ok());
+    }
+
+    #[test]
     fn messages_reject_embedded_escapes() {
         assert!(matches!(
             message_body("nice \x1b]0;pwned\x07 try"),

@@ -297,7 +297,7 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 let name = message.author_label().to_owned();
                 let color =
                     theme.nick_color(message.author.as_ref().map_or("system", |a| &a.username));
-                chunk.push(Line::from(vec![
+                let mut line = Line::from(vec![
                     Span::styled("· ", Style::default().fg(theme.tertiary)),
                     Span::styled(
                         name,
@@ -309,7 +309,16 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             .fg(theme.tertiary)
                             .add_modifier(Modifier::ITALIC),
                     ),
-                ]));
+                ]);
+                // Being the target of an action reads like a mention.
+                let mentioned = app
+                    .me
+                    .as_ref()
+                    .is_some_and(|me| message.mentions(&me.username));
+                if mentioned {
+                    line = line.style(Style::default().bg(theme.highlight_bg));
+                }
+                chunk.push(line);
             }
             MessageKind::Chat => {
                 let username = message
@@ -459,6 +468,18 @@ pub fn members(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     Style::default().fg(theme.nick_color(&member.username)),
                 ),
             ];
+            // A landed action (/shoot and friends) blinks its glyph on the
+            // target's name until it expires.
+            if let Some(fx) = room.fx.iter().find(|fx| fx.user == member.id) {
+                if fx.at.elapsed().as_millis() / 250 % 2 == 0 {
+                    spans.push(Span::styled(
+                        format!(" {}", fx.glyph),
+                        Style::default()
+                            .fg(theme.danger)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+            }
             if let Some(text) = &member.status_text {
                 spans.push(Span::styled(
                     format!(" · {text}"),

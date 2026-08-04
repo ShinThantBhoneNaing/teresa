@@ -271,6 +271,30 @@ mod tests {
     }
 
     #[test]
+    fn editing_handles_myanmar_combining_marks() {
+        // Burmese: base consonants carry zero-width combining vowels and
+        // stacked-consonant marks. The cursor must stay on char boundaries
+        // and the column must not count zero-width marks.
+        let mut line = line_with("မင်္ဂလာပါ");
+        assert_eq!(line.text(), "မင်္ဂလာပါ");
+
+        // Walk the cursor across the whole cluster and back — no panic,
+        // no split UTF-8.
+        for _ in 0..20 {
+            line.left();
+        }
+        for _ in 0..20 {
+            line.right();
+        }
+        assert_eq!(line.text(), "မင်္ဂလာပါ");
+
+        // Backspace peels marks one at a time, like every Myanmar editor.
+        line.backspace();
+        line.insert('ါ');
+        assert_eq!(line.text(), "မင်္ဂလာပါ");
+    }
+
+    #[test]
     fn cursor_column_counts_cells_not_bytes() {
         let line = line_with("é🐧");
         // é = 1 cell, 🐧 = 2 cells.

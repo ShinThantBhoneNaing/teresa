@@ -79,6 +79,20 @@ pub struct RoomState {
     pub pending: HashMap<String, PendingSend>,
     /// Unread mentions (subset of `info.unread`).
     pub mentions: u32,
+    /// Live action hits (`/shoot` and friends): the glyph flashing next to a
+    /// member's name until it expires.
+    pub fx: Vec<Fx>,
+}
+
+/// One action landing on one member, briefly.
+#[derive(Debug)]
+pub struct Fx {
+    /// Who got hit.
+    pub user: UserId,
+    /// The glyph to flash next to their name.
+    pub glyph: &'static str,
+    /// When it landed; drives the blink and the expiry.
+    pub at: Instant,
 }
 
 /// A message optimistically shown before the server confirms it.
@@ -106,6 +120,7 @@ impl RoomState {
             scroll: 0,
             pending: HashMap::new(),
             mentions: 0,
+            fx: Vec::new(),
         }
     }
 

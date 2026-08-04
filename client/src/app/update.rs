@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-use teresa_proto::{ClientFrame, RoomKind, ServerFrame, HISTORY_PAGE_DEFAULT};
+use teresa_proto::{ClientFrame, MessageKind, RoomKind, ServerFrame, HISTORY_PAGE_DEFAULT};
 
 use crate::net::ws::NetEvent;
 use crate::ui::theme::Theme;
@@ -24,6 +24,8 @@ const TYPING_EXPIRY: Duration = Duration::from_secs(4);
 /// Window in which an incoming `Joined` counts as the answer to our own
 /// `/join`, `/create` or `/dm` (and therefore switches the screen to it).
 const ACTIVATE_WINDOW: Duration = Duration::from_secs(5);
+/// How long an action hit (`/shoot` and friends) flashes on the target's name.
+pub(crate) const FX_DURATION: Duration = Duration::from_secs(4);
 
 /// Applies one event.
 pub fn update(app: &mut App, event: Event) {
@@ -111,9 +113,12 @@ fn on_frame(app: &mut App, frame: ServerFrame) {
         ServerFrame::Message { message } => on_message(app, message),
 
         ServerFrame::Posted { message, nonce } => {
+            let action = action_of(&message);
             if let Some(room) = app.rooms.get_mut(&message.room_id) {
                 room.pending.remove(&nonce);
-                room.push_message(message);
+                if room.push_message(message) {
+                    apply_fx(room, action);
+                }
             }
         }
 
@@ -324,13 +329,32 @@ fn on_message(app: &mut App, message: teresa_proto::Message) {
     let preview = preview_of(&message.body);
     let label = state.label();
     let at_tail = state.scroll == 0;
+    let action = action_of(&message);
+    let hit_me = action
+        .as_ref()
+        .is_some_and(|(_, target)| *target == my_name);
+    let hit_glyph = action.as_ref().map(|(glyph, _)| *glyph);
 
     if !state.push_message(message) {
         return; // duplicate (our own echo after Posted)
     }
+    apply_fx(state, action);
 
     if own {
         return; // no self-notification of any kind
+    }
+
+    // Getting shot in the room you are watching still deserves a flash of
+    // theatre; background rooms are covered by the mention path below.
+    if hit_me && is_active && app.config.notifications {
+        let glyph = hit_glyph.unwrap_or_default();
+        app.toast(
+            ToastKind::Mention,
+            format!("{glyph} {author_label} got you"),
+        );
+        if app.config.bell {
+            app.effects.push(Effect::Bell);
+        }
     }
 
     if is_active && at_tail {
@@ -354,6 +378,32 @@ fn on_message(app: &mut App, message: teresa_proto::Message) {
                 app.effects.push(Effect::Bell);
             }
         }
+    }
+}
+
+/// The hit effect an incoming message carries, if it is a targeted action.
+fn action_of(message: &teresa_proto::Message) -> Option<(&'static str, String)> {
+    (message.kind == MessageKind::Emote)
+        .then(|| super::commands::action_fx(&message.body))
+        .flatten()
+}
+
+/// Lands an action's glyph on the target member, if they are in the room.
+fn apply_fx(room: &mut super::RoomState, action: Option<(&'static str, String)>) {
+    let Some((glyph, target)) = action else {
+        return;
+    };
+    if let Some(user) = room
+        .members
+        .iter()
+        .find(|m| m.username == target)
+        .map(|m| m.id)
+    {
+        room.fx.push(super::Fx {
+            user,
+            glyph,
+            at: Instant::now(),
+        });
     }
 }
 
@@ -602,6 +652,32 @@ fn execute(app: &mut App, command: Command) {
             app.send(ClientFrame::Emote {
                 room: room_id,
                 body: action,
+                nonce,
+            });
+        }
+
+        Command::Action { verb, target } => {
+            let Some(room_id) = app.active else {
+                app.toast(ToastKind::Error, "no room selected — Ctrl+W");
+                return;
+            };
+            let spec = super::commands::action(&verb).expect("parser only emits known verbs");
+            let body = spec.body(&target);
+            let nonce = app.nonce();
+            if let Some(room) = app.rooms.get_mut(&room_id) {
+                room.pending.insert(
+                    nonce.clone(),
+                    super::PendingSend {
+                        body: body.clone(),
+                        emote: true,
+                        at: Instant::now(),
+                    },
+                );
+                room.scroll = 0;
+            }
+            app.send(ClientFrame::Emote {
+                room: room_id,
+                body,
                 nonce,
             });
         }
@@ -897,13 +973,17 @@ fn on_tick(app: &mut App) {
     app.toasts.retain(|toast| toast.until > now);
     animated |= app.toasts.len() != before || !app.toasts.is_empty();
 
-    // Expire stale typing indicators.
+    // Expire stale typing indicators and spent action hits.
     for state in app.rooms.values_mut() {
         let before = state.typing.len();
         state
             .typing
             .retain(|(_, _, at)| at.elapsed() < TYPING_EXPIRY);
         animated |= state.typing.len() != before || !state.typing.is_empty();
+
+        let before = state.fx.len();
+        state.fx.retain(|fx| fx.at.elapsed() < FX_DURATION);
+        animated |= state.fx.len() != before || !state.fx.is_empty();
     }
 
     // Keep animating while anything on screen moves: the boot splash, the
@@ -923,6 +1003,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::app::commands;
     use crate::config::ClientConfig;
 
     fn user(name: &str) -> User {
@@ -1348,6 +1429,122 @@ mod tests {
         );
         assert_eq!(app.active, Some(general.id));
         assert!(!app.rooms.contains_key(&side.id));
+    }
+
+    #[test]
+    fn shoot_sends_a_targeted_emote() {
+        let (mut app, _me, general) = ready_app();
+        let bob = user("bob");
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Members {
+                room: general.id,
+                members: vec![bob],
+            })),
+        );
+
+        for c in "/shoot @bob".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+
+        let sent = app.effects.iter().find_map(|e| match e {
+            Effect::Send(ClientFrame::Emote { body, .. }) => Some(body.clone()),
+            _ => None,
+        });
+        let body = sent.expect("an emote frame went out");
+        assert!(body.starts_with("🔫 "), "carries the wire signature");
+        assert!(body.contains("@bob"), "mentions the target");
+        assert_eq!(
+            app.active_room().unwrap().pending.len(),
+            1,
+            "optimistic echo pending"
+        );
+    }
+
+    #[test]
+    fn an_incoming_shot_flashes_the_target_and_toasts_the_victim() {
+        let (mut app, me, general) = ready_app();
+        let alice = user("alice");
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Members {
+                room: general.id,
+                members: vec![alice.clone(), me.clone()],
+            })),
+        );
+
+        // Alice shoots me, in the room I am watching.
+        let mut shot = chat(
+            general.id,
+            &alice,
+            &commands::action("shoot").unwrap().body("neo"),
+        );
+        shot.kind = MessageKind::Emote;
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Message { message: shot })),
+        );
+
+        let state = app.active_room().unwrap();
+        assert_eq!(state.fx.len(), 1, "the hit landed");
+        assert_eq!(state.fx[0].user, me.id, "on the right member");
+        assert_eq!(state.fx[0].glyph, "💥");
+        assert!(
+            app.toasts.iter().any(|t| t.kind == ToastKind::Mention),
+            "the victim is told"
+        );
+        assert!(app.effects.contains(&Effect::Bell));
+    }
+
+    #[test]
+    fn own_shots_register_the_hit_via_the_posted_ack() {
+        let (mut app, me, general) = ready_app();
+        let bob = user("bob");
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Members {
+                room: general.id,
+                members: vec![bob.clone()],
+            })),
+        );
+
+        for c in "/shoot bob".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+        let nonce = app
+            .active_room()
+            .unwrap()
+            .pending
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+
+        let mut echo = chat(
+            general.id,
+            &me,
+            &commands::action("shoot").unwrap().body("bob"),
+        );
+        echo.kind = MessageKind::Emote;
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Posted {
+                message: echo.clone(),
+                nonce,
+            })),
+        );
+        let state = app.active_room().unwrap();
+        assert_eq!(state.fx.len(), 1, "shooter sees the hit too");
+        assert_eq!(state.fx[0].user, bob.id);
+
+        // The room broadcast of the same message must not double the hit.
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Message { message: echo })),
+        );
+        assert_eq!(app.active_room().unwrap().fx.len(), 1);
     }
 
     #[test]

@@ -239,11 +239,95 @@ const CATPPUCCIN: Theme = Theme {
     highlight_bg: rgb(49, 50, 68),
 };
 
+/// fsociety (Mr. Robot): charcoal black, signal red, Coney Island neon.
+const FSOCIETY: Theme = Theme {
+    name: "fsociety",
+    bg: rgb(8, 8, 10),
+    surface: rgb(17, 17, 21),
+    fg: rgb(212, 212, 216),
+    muted: rgb(100, 100, 110),
+    border: rgb(42, 42, 50),
+    border_focus: rgb(227, 6, 19),
+    primary: rgb(227, 6, 19),
+    secondary: rgb(0, 180, 216),
+    tertiary: rgb(255, 176, 0),
+    success: rgb(0, 200, 83),
+    warning: rgb(255, 176, 0),
+    danger: rgb(227, 6, 19),
+    nicks: [
+        rgb(0, 180, 216),
+        rgb(240, 240, 240),
+        rgb(255, 176, 0),
+        rgb(255, 90, 100),
+        rgb(120, 200, 190),
+        rgb(150, 150, 220),
+    ],
+    code_bg: rgb(22, 22, 28),
+    highlight_bg: rgb(46, 12, 16),
+};
+
+/// Amber: a 1980s monochrome CRT — one phosphor, every shade of it.
+const AMBER: Theme = Theme {
+    name: "amber",
+    bg: rgb(10, 6, 0),
+    surface: rgb(22, 13, 0),
+    fg: rgb(255, 176, 0),
+    muted: rgb(140, 92, 12),
+    border: rgb(72, 46, 6),
+    border_focus: rgb(255, 214, 90),
+    primary: rgb(255, 196, 0),
+    secondary: rgb(255, 140, 0),
+    tertiary: rgb(255, 228, 140),
+    success: rgb(255, 214, 90),
+    warning: rgb(255, 140, 0),
+    danger: rgb(255, 80, 40),
+    nicks: [
+        rgb(255, 196, 0),
+        rgb(255, 150, 40),
+        rgb(255, 222, 120),
+        rgb(230, 160, 0),
+        rgb(255, 180, 60),
+        rgb(200, 130, 0),
+    ],
+    code_bg: rgb(26, 16, 2),
+    highlight_bg: rgb(52, 33, 4),
+};
+
+/// Ghost (in the Shell): deep-sea teal, cyberbrain aqua, thermoptic violet.
+const GHOST: Theme = Theme {
+    name: "ghost",
+    bg: rgb(3, 12, 14),
+    surface: rgb(8, 22, 26),
+    fg: rgb(190, 232, 232),
+    muted: rgb(82, 122, 126),
+    border: rgb(20, 52, 58),
+    border_focus: rgb(0, 255, 213),
+    primary: rgb(0, 255, 213),
+    secondary: rgb(150, 140, 255),
+    tertiary: rgb(255, 160, 80),
+    success: rgb(80, 250, 170),
+    warning: rgb(255, 200, 90),
+    danger: rgb(255, 90, 100),
+    nicks: [
+        rgb(0, 255, 213),
+        rgb(150, 140, 255),
+        rgb(120, 220, 255),
+        rgb(160, 255, 200),
+        rgb(255, 150, 190),
+        rgb(110, 170, 190),
+    ],
+    code_bg: rgb(6, 18, 22),
+    highlight_bg: rgb(12, 44, 48),
+};
+
 /// Every theme, in `/theme` listing order.
-const ROSTER: [&Theme; 7] = [
+const ROSTER: [&Theme; 10] = [
     &MATRIX,
     &CYBERPUNK,
     &WHOAMI,
+    &FSOCIETY,
+    &AMBER,
+    &GHOST,
     &DRACULA,
     &NORD,
     &GRUVBOX,
@@ -351,12 +435,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_roster_has_all_seven_advertised_themes() {
+    fn the_roster_has_all_ten_advertised_themes() {
         let names = Theme::roster();
         for wanted in [
             "matrix",
             "cyberpunk",
             "whoami",
+            "fsociety",
+            "amber",
+            "ghost",
             "dracula",
             "nord",
             "gruvbox",
@@ -364,7 +451,7 @@ mod tests {
         ] {
             assert!(names.contains(&wanted), "missing theme {wanted}");
         }
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 10);
     }
 
     #[test]

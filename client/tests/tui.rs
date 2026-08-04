@@ -193,6 +193,9 @@ fn every_theme_renders_every_screen_without_panicking() {
         "matrix",
         "cyberpunk",
         "whoami",
+        "fsociety",
+        "amber",
+        "ghost",
         "dracula",
         "nord",
         "gruvbox",
@@ -303,6 +306,64 @@ fn the_connection_veil_reports_reconnection() {
     assert!(text.contains("LINK LOST"));
     assert!(text.contains("connection lost"));
     assert!(text.contains("Ctrl+R"));
+}
+
+#[test]
+fn myanmar_text_renders_in_messages_and_input() {
+    let mut app = ready_app();
+    let room_id = app.active.expect("active room");
+    let alice = user("Alice", UserStatus::Online);
+    update(
+        &mut app,
+        Event::Net(NetEvent::Frame(ServerFrame::Message {
+            message: chat(room_id, &alice, "မင်္ဂလာပါ **အားလုံး** 🇲🇲"),
+        })),
+    );
+    for c in "ကောင်းတယ်".chars() {
+        update(
+            &mut app,
+            Event::Key(ratatui::crossterm::event::KeyEvent::from(
+                ratatui::crossterm::event::KeyCode::Char(c),
+            )),
+        );
+    }
+
+    let text = flat(&screen(&app, 120, 32));
+    assert!(
+        text.contains('မ'),
+        "burmese message text survives rendering"
+    );
+    assert!(text.contains("အားလုံး"), "markdown bold keeps burmese intact");
+    assert!(text.contains('က'), "burmese input echoes in the prompt");
+}
+
+#[test]
+fn a_shot_flashes_on_the_target_in_the_member_panel() {
+    let mut app = ready_app();
+    let room_id = app.active.expect("active room");
+    let alice = app.rooms[&room_id].members[0].clone();
+    let bob = app.rooms[&room_id].members[1].clone();
+
+    let shot = teresa_client::app::commands::action("shoot")
+        .expect("shoot exists")
+        .body(&bob.username);
+    update(
+        &mut app,
+        Event::Net(NetEvent::Frame(ServerFrame::Message {
+            message: Message {
+                kind: MessageKind::Emote,
+                ..chat(room_id, &alice, &shot)
+            },
+        })),
+    );
+
+    let text = flat(&screen(&app, 120, 32));
+    assert!(text.contains("🔫"), "the action line is in the scrollback");
+    // Once in the emote body ("headshot 💥") and once next to bob's name.
+    assert!(
+        text.matches("💥").count() >= 2,
+        "the hit glyph flashes in the member panel"
+    );
 }
 
 #[test]

@@ -70,6 +70,12 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![key("/invite <user>"), txt("invite into this room")]),
         Line::from(vec![key("/leave"), txt("leave this room")]),
         Line::from(vec![key("/me <action>"), txt("emote")]),
+        Line::from(vec![
+            key("/shoot <user>"),
+            txt("gun someone down — 💥 on their name"),
+        ]),
+        Line::from(vec![key(""), txt("also /slap /hug /highfive /hack /nuke")]),
+        Line::from(vec![key(""), txt("     /coffee /fire /rekt")]),
         Line::from(vec![key("/nick <name>"), txt("change display name")]),
         Line::from(vec![
             key("/status <s> [txt]"),
