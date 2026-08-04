@@ -184,6 +184,52 @@ clock_24h = true
 
 Per-run overrides: `teresa --server chat.example.com --port 443 --tls true`.
 
+## Team access from anywhere (Tailscale)
+
+The zero-cost way to let every dev reach your node from any network — home,
+office, phone hotspot — without a public server, port forwarding, or ever
+re-sending an IP address: put the machines on a [Tailscale](https://tailscale.com)
+mesh. Every device gets a stable private address that follows it anywhere,
+and all traffic is WireGuard-encrypted end to end.
+
+**On the machine hosting `teresad`** (once):
+
+```sh
+brew install tailscale                # or the installer for your OS
+sudo brew services start tailscale    # daemon starts at boot from now on
+sudo tailscale up --operator=$USER    # sign in / join your tailnet
+
+# bind the server to all interfaces so the tailnet can reach it
+TERESA_BIND=0.0.0.0 TERESA_DB=~/.config/teresa/teresa.db teresad
+
+tailscale status                      # note this machine's name, e.g.
+                                      # myhost.tail364b12.ts.net
+```
+
+**Each dev** (once):
+
+1. Install Tailscale ([tailscale.com/download](https://tailscale.com/download))
+   and sign in with a free account.
+2. Get access to the host's tailnet — either the host invites you
+   (*admin console → Users → Invite*, 3 users free) or shares just the one
+   machine with your account (*admin console → Machines → ⋯ → Share*,
+   free for any number of devs).
+3. Point TERESA at the stable name, once, forever:
+
+   ```toml
+   # ~/.config/teresa/config.toml
+   server = "myhost.tail364b12.ts.net"
+   port = 7737
+   ```
+
+4. `teresa` — you're in the grid.
+
+The host's LAN IP can change, the host can move continents: the `.ts.net`
+name keeps working. Because Tailscale already encrypts every packet,
+running the node itself in plaintext (`tls` unset) is fine on a tailnet;
+TERESA's own TLS remains available for exposure to the open internet
+(see [`docs/INSTALL.md`](docs/INSTALL.md)).
+
 Server side, `teresad --config server.toml` — see
 [`config/server.example.toml`](config/server.example.toml) for every knob:
 bind address, TLS cert/key, rate limits, session lifetime, seed rooms, MOTD,
