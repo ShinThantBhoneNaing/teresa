@@ -76,21 +76,72 @@ terminals in *Who Am I* and every hacker movie that got it right.
   role-based permissions
 - **Fast** — first paint in ~10 ms, ~9 MB client RSS, ~8 MB server RSS
 
-## Quickstart
+## Install — Linux · macOS · Windows
+
+Everything is built from source with Rust; the result is two dependency-free
+binaries. The steps below end with `teresa` callable from any terminal.
+
+### 1. Install Rust (once, any OS)
+
+**Linux / macOS** — in a terminal:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Accept the defaults, then restart the terminal (or `source "$HOME/.cargo/env"`).
+
+**Windows** — download and run
+[rustup-init.exe](https://rustup.rs); accept the defaults. If it asks,
+let it install the *Visual Studio C++ Build Tools*. Then open a **new**
+PowerShell.
+
+You also need a C compiler for the bundled SQLite:
+
+| OS | What to do |
+| --- | --- |
+| macOS | `xcode-select --install` (already present if you use Homebrew) |
+| Debian/Ubuntu | `sudo apt install build-essential` |
+| Fedora | `sudo dnf install gcc` |
+| Arch | `sudo pacman -S base-devel` |
+| Windows | covered by the Build Tools rustup installs |
+
+### 2. Build and put `teresa` on your PATH (all OSes, same commands)
 
 ```sh
 git clone https://github.com/ShinThantBhoneNaing/teresa.git
 cd teresa
-
-# build both binaries (Rust 1.85+)
-cargo build --release
-
-# 1. start a server (defaults: 127.0.0.1:7737, SQLite in ./teresa.db)
-./target/release/teresad
-
-# 2. in another terminal: run the client
-./target/release/teresa
+cargo install --path client    # installs `teresa`
+cargo install --path server    # installs `teresad` (only needed on the host)
 ```
+
+`cargo install` places binaries in `~/.cargo/bin` (Windows:
+`%USERPROFILE%\.cargo\bin`), which rustup already added to your PATH —
+so this *is* the PATH setup. Verify from a new terminal:
+
+```sh
+teresa --version    # → teresa 1.0.0
+```
+
+If the command is not found, the PATH entry just isn't loaded yet:
+restart the terminal, or add it manually — Linux/macOS: append
+`export PATH="$HOME/.cargo/bin:$PATH"` to `~/.zshrc` / `~/.bashrc`;
+Windows: *Settings → System → About → Advanced system settings →
+Environment Variables → Path → New →* `%USERPROFILE%\.cargo\bin`.
+
+### 3. Run it
+
+```sh
+# on ONE machine — the host (defaults: 127.0.0.1:7737, SQLite ./teresa.db)
+teresad
+
+# every dev, in their own terminal
+teresa
+```
+
+Connecting to a host that isn't your own machine? Point the client at it
+once — `teresa --server <host-address>` — or set it in the config file
+(see below); teammates on Tailscale use the `.ts.net` name.
 
 First launch, no account — the welcome is fully animated (the logo
 materialises through a violet→sky gradient, the ✦ mark spins beside

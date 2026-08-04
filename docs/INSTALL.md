@@ -30,6 +30,13 @@ cargo install --path server   # teresad
 cargo install --path client   # teresa
 ```
 
+`cargo install` drops binaries into `~/.cargo/bin` (Windows:
+`%USERPROFILE%\.cargo\bin`), which the rustup installer already put on your
+PATH on every OS — open a new terminal and `teresa --version` should answer.
+If it does not, add that directory to your PATH yourself: on Linux/macOS
+append `export PATH="$HOME/.cargo/bin:$PATH"` to your shell profile; on
+Windows add `%USERPROFILE%\.cargo\bin` under *Environment Variables → Path*.
+
 ## Running a server
 
 ### Local / LAN, no TLS
