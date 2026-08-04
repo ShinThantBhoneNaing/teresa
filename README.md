@@ -229,3 +229,7 @@ existing repository traits for multi-node setups.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Contributors
+@ShinThantBhoneNaing
+@Khit Thit (mytx)
