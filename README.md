@@ -219,7 +219,12 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 
 ## Configuration
 
-`~/.config/teresa/config.toml` (written with defaults on first run):
+Written with defaults on first run, at:
+
+| OS | Path |
+| --- | --- |
+| Linux / macOS | `~/.config/teresa/config.toml` |
+| Windows | `%APPDATA%\teresa\config.toml` |
 
 ```toml
 server = "192.168.1.15"
@@ -233,7 +238,8 @@ typing_indicators = true
 clock_24h = true
 ```
 
-Per-run overrides: `teresa --server chat.example.com --port 443 --tls true`.
+Per-run overrides work everywhere and need no file at all:
+`teresa --server chat.example.com --port 443 --tls true`.
 
 ## Team access from anywhere (Tailscale)
 
@@ -274,6 +280,18 @@ tailscale status                      # note this machine's name, e.g.
    ```
 
 4. `teresa` — you're in the grid.
+
+   On Windows, PowerShell instead of the heredoc above:
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$env:APPDATA\teresa" | Out-Null
+   @"
+   server = "myhost.tail364b12.ts.net"
+   port = 7737
+   "@ | Set-Content "$env:APPDATA\teresa\config.toml"
+   ```
+
+   Or skip the file entirely: `teresa --server myhost.tail364b12.ts.net`.
 
 The host's LAN IP can change, the host can move continents: the `.ts.net`
 name keeps working. Because Tailscale already encrypts every packet,
