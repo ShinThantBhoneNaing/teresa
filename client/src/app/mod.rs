@@ -19,6 +19,7 @@ use teresa_proto::{
 };
 
 use crate::config::ClientConfig;
+use crate::ui;
 use crate::ui::theme::Theme;
 use history::InputLine;
 
@@ -196,6 +197,13 @@ pub enum Overlay {
         /// What has been typed into the filter.
         filter: String,
         /// Which visible entry is highlighted.
+        selected: usize,
+    },
+    /// Ctrl+E or `/emoji`: searchable emoji grid; Enter inserts at the cursor.
+    EmojiPicker {
+        /// What has been typed into the search box.
+        filter: String,
+        /// Index into the filtered results.
         selected: usize,
     },
     /// Session death notice with instructions.
@@ -377,9 +385,19 @@ impl App {
         format!("n{value:x}")
     }
 
-    /// All usernames known in the active room, for Tab completion.
+    /// What Tab completes into: `:emoji:` inside a colon fragment, commands at
+    /// the start of a line, usernames everywhere else.
     #[must_use]
     pub fn completion_candidates(&self) -> Vec<String> {
+        // `:roc` → `:rocket:`. Checked first: a colon fragment is unambiguous,
+        // and no username may contain one.
+        if let Some(stem) = self.input.fragment().strip_prefix(':') {
+            // Tolerate a closed `:rocket:` so re-Tabbing a finished shortcode
+            // is a no-op instead of a surprise.
+            let stem = stem.strip_suffix(':').unwrap_or(stem);
+            return ui::emoji::completions(stem);
+        }
+
         let mut names: Vec<String> = self
             .active_room()
             .map(|room| room.members.iter().map(|m| m.username.clone()).collect())

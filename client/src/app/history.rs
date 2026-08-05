@@ -184,8 +184,33 @@ impl InputLine {
         }
     }
 
+    /// The word being typed: everything from the last whitespace to the
+    /// cursor.
+    ///
+    /// Public because the caller decides *what* to complete from it — a `:`
+    /// opener means emoji, everything else means names and commands — and it
+    /// must split the word exactly the way [`complete`](Self::complete) will.
+    #[must_use]
+    pub fn fragment(&self) -> &str {
+        let before = &self.buffer[..self.cursor];
+        let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        &before[start..]
+    }
+
+    /// Deletes the word being typed, leaving the rest of the line alone.
+    ///
+    /// Used when the emoji picker adopts a half-typed `:roc` as its search:
+    /// the fragment moves into the overlay rather than being duplicated.
+    pub fn delete_fragment(&mut self) {
+        self.completion = None;
+        let start = self.cursor - self.fragment().len();
+        self.buffer.replace_range(start..self.cursor, "");
+        self.cursor = start;
+    }
+
     /// Tab: completes the fragment at the cursor from `candidates`
-    /// (usernames, room names, command names). Repeated presses cycle.
+    /// (usernames, room names, command names, `:emoji:`). Repeated presses
+    /// cycle.
     pub fn complete(&mut self, candidates: &[String]) {
         // A second Tab in a live cycle advances it.
         if let Some(cycle) = &mut self.completion {
@@ -197,10 +222,8 @@ impl InputLine {
             return;
         }
 
-        // Fragment = from the last whitespace to the cursor.
-        let before = &self.buffer[..self.cursor];
-        let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
-        let fragment = &before[start..];
+        let fragment = self.fragment();
+        let start = self.cursor - fragment.len();
         if fragment.is_empty() {
             return;
         }
@@ -254,6 +277,46 @@ mod tests {
         let mut line = InputLine::default();
         line.insert_str(text);
         line
+    }
+
+    #[test]
+    fn fragment_is_the_word_under_the_cursor() {
+        assert_eq!(line_with("ship it :roc").fragment(), ":roc");
+        assert_eq!(line_with("hey @ali").fragment(), "@ali");
+        assert_eq!(line_with("/joi").fragment(), "/joi");
+        // Nothing after the last space is an empty fragment, not the line.
+        assert_eq!(line_with("ship it ").fragment(), "");
+        assert_eq!(line_with("").fragment(), "");
+
+        // It follows the cursor, not the end of the buffer.
+        let mut line = line_with("ship :rocket:");
+        line.left();
+        line.left();
+        assert_eq!(line.fragment(), ":rocke");
+    }
+
+    #[test]
+    fn delete_fragment_takes_only_the_word_being_typed() {
+        let mut line = line_with("ship it :roc");
+        line.delete_fragment();
+        assert_eq!(line.text(), "ship it ");
+
+        // Multibyte content in the fragment must not split a char.
+        let mut line = line_with("say 🐧🐧");
+        line.delete_fragment();
+        assert_eq!(line.text(), "say ");
+
+        // Nothing to delete is not a panic.
+        let mut line = line_with("done ");
+        line.delete_fragment();
+        assert_eq!(line.text(), "done ");
+    }
+
+    #[test]
+    fn tab_completes_an_emoji_shortcode() {
+        let mut line = line_with("ship it :roc");
+        line.complete(&[":rocket:".to_owned()]);
+        assert_eq!(line.text(), "ship it :rocket:");
     }
 
     #[test]

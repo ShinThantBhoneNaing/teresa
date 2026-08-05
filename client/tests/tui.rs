@@ -292,6 +292,48 @@ fn overlays_render_over_the_app() {
 }
 
 #[test]
+fn the_emoji_picker_draws_its_grid_and_survives_a_narrow_terminal() {
+    let mut app = ready_app();
+
+    app.overlay = Some(Overlay::EmojiPicker {
+        filter: "fire".to_owned(),
+        selected: 0,
+    });
+    let rows = screen(&app, 120, 32);
+    let text = flat(&rows);
+    assert!(text.contains("EMOJI"));
+    assert!(text.contains("🔥"), "the searched glyph is on screen");
+    assert!(text.contains(":fire:"), "the selected entry names itself");
+    assert!(text.contains("fire"), "keywords explain the match");
+
+    // Every row must still be exactly the terminal width: a mis-measured
+    // emoji cell would shear the grid and this is what catches it.
+    for row in &rows {
+        assert_eq!(
+            row.chars().count(),
+            120,
+            "a row changed width — check the cell padding maths"
+        );
+    }
+
+    // A filter matching nothing says so rather than drawing an empty box.
+    app.overlay = Some(Overlay::EmojiPicker {
+        filter: "zzzznotathing".to_owned(),
+        selected: 0,
+    });
+    let text = flat(&screen(&app, 120, 32));
+    assert!(text.contains("no emoji by that name"));
+
+    // Narrow terminals clamp the modal instead of panicking.
+    app.overlay = Some(Overlay::EmojiPicker {
+        filter: String::new(),
+        selected: 0,
+    });
+    let text = flat(&screen(&app, 40, 14));
+    assert!(text.contains("EMOJI"));
+}
+
+#[test]
 fn the_connection_veil_reports_reconnection() {
     let mut app = ready_app();
     update(

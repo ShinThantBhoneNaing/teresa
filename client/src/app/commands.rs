@@ -58,6 +58,8 @@ pub enum Command {
     },
     /// `/theme [name]` — switch themes, or list them.
     Theme(Option<String>),
+    /// `/emoji [query]` — open the picker, optionally pre-searched.
+    Emoji(Option<String>),
     /// `/clear` — clear the current room's scrollback (locally).
     Clear,
     /// `/ping` — measure round-trip time.
@@ -107,6 +109,7 @@ pub fn parse(input: &str) -> Command {
         "nick" | "name" => require_arg(args, |a| Command::Nick(a.to_owned())),
         "status" => parse_status(args),
         "theme" => Command::Theme((!args.is_empty()).then(|| args.to_lowercase())),
+        "emoji" | "emojis" => Command::Emoji((!args.is_empty()).then(|| args.to_lowercase())),
         "clear" | "cls" => Command::Clear,
         "ping" => Command::Ping,
         "version" | "ver" => Command::Version,
@@ -237,7 +240,7 @@ pub fn action_fx(body: &str) -> Option<(&'static str, String)> {
 pub const COMMAND_NAMES: &[&str] = &[
     "help", "users", "whoami", "rooms", "join", "create", "delete", "invite", "dm", "leave", "me",
     "shoot", "slap", "hug", "highfive", "hack", "nuke", "coffee", "fire", "rekt", "nick", "status",
-    "theme", "clear", "ping", "version", "logout", "quit",
+    "theme", "emoji", "clear", "ping", "version", "logout", "quit",
 ];
 
 fn require_arg(args: &str, build: impl FnOnce(&str) -> Command) -> Command {

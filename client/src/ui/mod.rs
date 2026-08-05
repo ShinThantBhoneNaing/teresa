@@ -6,6 +6,7 @@
 
 pub mod anim;
 pub mod boot;
+pub mod emoji;
 pub mod highlight;
 pub mod markdown;
 pub mod overlays;
