@@ -197,6 +197,7 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `/nick <name>` | change display name |
 | `/status <s> [text]` | online · busy · coding · reviewing · away |
 | `/theme [name]` | switch themes; bare lists them |
+| `/emoji [search]` | open the emoji picker, optionally pre-searched |
 | `/rooms` · `/users` | list channels · refresh member panel |
 | `/whoami` · `/version` · `/ping` | identity · versions · round-trip |
 | `/clear` | clear local scrollback |
@@ -219,6 +220,81 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `Ctrl+L` | repaint |
 | `Esc` | close overlay / jump to newest |
 | `Ctrl+C` | quit (asks first) |
+
+## Emoji
+
+Three ways in, depending on whether you remember the name.
+
+### You remember it — type the shortcode
+
+```text
+❯ ship it :rocket: the tests are green :check:
+```
+
+Renders as **ship it 🚀 the tests are green ✅**. Names are lowercase words
+joined by `_`, plus `:+1:` 👍 and `:-1:` 👎. A `:name:` the catalogue does not
+have stays exactly as typed, so a `:shipit:` you brought from elsewhere and a
+timestamp like `12:30:45` both survive untouched.
+
+### You half-remember it — Tab
+
+```text
+❯ ship it :roc▏     ──Tab──▶     ❯ ship it :rocket:▏
+```
+
+Tab completes `:` fragments the same way it completes `@names` and
+`/commands`; press it again to cycle when a prefix matches several. It is
+deliberately strict — prefix-on-name only — because Tab should be
+predictable, not clever.
+
+### You don't remember it — `Alt+E`
+
+```text
+╔═ EMOJI ═════════════════════════════════════════════════════╗
+║  ⌕ fire▏                                                    ║
+║                                                             ║
+║ 🔥 fire        🚒 fire_engine 🐉 dragon      🦊 fox          ║
+║                                                             ║
+║  🔥 :fire: hot · lit · burn · flame · shipping              ║
+║  type to search · ←↑↓→ move · enter insert · esc close      ║
+╚═════════════════════════════════════════════════════════════╝
+```
+
+Type to search, arrows to move, `Enter` to insert at the cursor, `Esc` to
+close without inserting. `Alt+E` again also closes it.
+
+Search reads **names and keywords**, so you can arrive from the word you
+actually thought of: `lgtm` finds 👍, `docker` finds 🐳, `deploy` finds 🚀,
+`flaky` finds ❄️. The keywords of the highlighted entry are printed
+underneath, so a surprising match explains itself. Ranking is exact name,
+then name prefix, then keyword — `fire` puts 🔥 above 🚒.
+
+Two conveniences:
+
+- Already typed `:roc`? `Alt+E` adopts it as the search and takes it off your
+  input line, so you continue rather than start over.
+- `/emoji hot` opens the picker already searching, if you would rather type
+  than reach for a chord.
+
+### What actually goes over the wire
+
+Shortcodes travel as text and expand when each client *renders* them; picked
+glyphs travel as the emoji itself. Both arrive fine. It matters in one place:
+a `:name:` your client knows but an older client doesn't will show up there as
+literal `:name:`, whereas a glyph inserted from the picker always displays.
+When it must land identically for everyone, pick from `Alt+E`.
+
+### Fonts and terminals
+
+TERESA never mangles a cluster — your terminal font does the drawing. If an
+emoji shows as a box, the font lacks that glyph; the text is intact and will
+render elsewhere. On Windows use Windows Terminal rather than the legacy
+console.
+
+The catalogue deliberately contains no ZWJ sequences (`👨‍💻` and friends).
+Terminals and `unicode-width` disagree about how wide those are, and that
+disagreement shears the message pane — so they are excluded, and a test keeps
+them out. Pasting one still works; it just isn't offered.
 
 ## Configuration
 

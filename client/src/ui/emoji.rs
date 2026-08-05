@@ -679,4 +679,27 @@ mod tests {
         // Empty query is the whole catalogue.
         assert_eq!(search("  ").len(), TABLE.len());
     }
+
+    #[test]
+    fn the_searches_the_readme_advertises_still_work() {
+        // The README shows this exact result row for `fire`. If a table edit
+        // reorders it, the screenshot in the docs became a lie — fix one or
+        // the other.
+        let names: Vec<&str> = search("fire").iter().map(|e| e.name).collect();
+        assert_eq!(names, ["fire", "fire_engine", "dragon", "fox"]);
+
+        // And the four "arrive from the word you thought of" examples.
+        for (query, expected) in [
+            ("lgtm", "+1"),
+            ("docker", "whale"),
+            ("deploy", "rocket"),
+            ("flaky", "snowflake"),
+        ] {
+            assert_eq!(
+                search(query).first().map(|e| e.name),
+                Some(expected),
+                "README says {query:?} finds :{expected}:"
+            );
+        }
+    }
 }
