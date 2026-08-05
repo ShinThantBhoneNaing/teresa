@@ -7,7 +7,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::update::{switcher_entries, SwitcherEntry};
+use unicode_width::UnicodeWidthStr;
+
+use crate::app::update::{emoji_results, switcher_entries, SwitcherEntry, EMOJI_COLUMNS};
 use crate::app::{App, Overlay};
 
 use super::centered;
@@ -20,6 +22,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Some(Overlay::Notifications) => notifications(frame, app, area),
         Some(Overlay::RoomSwitcher { filter, selected }) => {
             switcher(frame, app, area, filter, *selected);
+        }
+        Some(Overlay::EmojiPicker { filter, selected }) => {
+            emoji_picker(frame, app, area, filter, *selected);
         }
         Some(Overlay::ConfirmQuit) => confirm_quit(frame, app, area),
         Some(Overlay::AuthFailed { message }) => auth_failed(frame, app, area, message),
@@ -85,6 +90,7 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
             key("/theme [name]"),
             txt("switch colours; bare = list"),
         ]),
+        Line::from(vec![key("/emoji [search]"), txt("open the emoji picker")]),
         Line::from(vec![
             key("/rooms /users"),
             txt("list channels · list members"),
@@ -101,7 +107,11 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
             txt("cycle rooms · jump to room"),
         ]),
         Line::from(vec![key("PgUp/PgDn · wheel"), txt("scrollback")]),
-        Line::from(vec![key("Tab"), txt("complete names and /commands")]),
+        Line::from(vec![key("Alt+E"), txt("emoji picker")]),
+        Line::from(vec![
+            key("Tab"),
+            txt("complete names, /commands, :emoji:"),
+        ]),
         Line::from(vec![key("↑/↓"), txt("input history")]),
         Line::from(vec![key("Ctrl+K"), txt("clear scrollback")]),
         Line::from(vec![key("Ctrl+R"), txt("reconnect now")]),
@@ -302,6 +312,101 @@ fn switcher(frame: &mut Frame<'_>, app: &App, area: Rect, filter: &str, selected
     frame.render_widget(Clear, rect);
     frame.render_widget(
         Paragraph::new(Text::from(lines)).block(modal(app, "SWITCHBOARD")),
+        rect,
+    );
+}
+
+/// Display width of one grid cell: glyph, space, name, padding.
+const CELL_WIDTH: usize = 15;
+/// Grid rows drawn at once; the view scrolls to keep the selection inside.
+const VISIBLE_ROWS: usize = 8;
+
+fn emoji_picker(frame: &mut Frame<'_>, app: &App, area: Rect, filter: &str, selected: usize) {
+    let theme = &app.theme;
+    let results = emoji_results(app);
+    let selected = selected.min(results.len().saturating_sub(1));
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("  ⌕ ", Style::default().fg(theme.secondary)),
+            Span::styled(filter.to_owned(), Style::default().fg(theme.fg)),
+            Span::styled("▏", Style::default().fg(theme.primary)),
+        ]),
+        Line::default(),
+    ];
+
+    if results.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no emoji by that name",
+            Style::default().fg(theme.muted),
+        )));
+    }
+
+    // Scroll by whole rows so the selected cell stays on screen.
+    let rows = results.len().div_ceil(EMOJI_COLUMNS);
+    let selected_row = selected / EMOJI_COLUMNS;
+    let first_row = selected_row.saturating_sub(VISIBLE_ROWS - 1);
+
+    for row in first_row..rows.min(first_row + VISIBLE_ROWS) {
+        let mut spans = vec![Span::raw(" ")];
+        for column in 0..EMOJI_COLUMNS {
+            let index = row * EMOJI_COLUMNS + column;
+            let Some(entry) = results.get(index) else {
+                break;
+            };
+
+            // Pad by measured width: emoji are two columns, names are not.
+            let glyph_width = entry.glyph.width();
+            let budget = CELL_WIDTH.saturating_sub(glyph_width + 2);
+            let name: String = entry.name.chars().take(budget).collect();
+            let used = glyph_width + 1 + name.width();
+            let cell = format!(
+                "{} {}{}",
+                entry.glyph,
+                name,
+                " ".repeat(CELL_WIDTH.saturating_sub(used))
+            );
+
+            spans.push(Span::styled(
+                cell,
+                if index == selected {
+                    Style::default()
+                        .fg(theme.primary)
+                        .bg(theme.highlight_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.fg)
+                },
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // The keywords of the highlighted entry: why a search matched.
+    lines.push(Line::default());
+    if let Some(entry) = results.get(selected) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} :{}: ", entry.glyph, entry.name),
+                Style::default().fg(theme.secondary),
+            ),
+            Span::styled(
+                entry.keywords.join(" · "),
+                Style::default().fg(theme.muted),
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        "  type to search · ←↑↓→ move · enter insert · esc close",
+        Style::default().fg(theme.muted),
+    )));
+
+    let width = (CELL_WIDTH * EMOJI_COLUMNS + 3) as u16;
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let rect = centered(area, width.min(area.width.saturating_sub(2)), height);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(modal(app, "EMOJI")),
         rect,
     );
 }

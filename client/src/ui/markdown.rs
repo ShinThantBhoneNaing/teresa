@@ -12,38 +12,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+use super::emoji;
 use super::highlight;
 use super::theme::Theme;
 
-/// The `:shortcode:` table. Deliberately the well-worn set, not a registry.
-const EMOJI: [(&str, &str); 24] = [
-    ("fire", "🔥"),
-    ("rocket", "🚀"),
-    ("computer", "💻"),
-    ("penguin", "🐧"),
-    ("zap", "⚡"),
-    ("tada", "🎉"),
-    ("heart", "❤️"),
-    ("+1", "👍"),
-    ("-1", "👎"),
-    ("smile", "😄"),
-    ("grin", "😁"),
-    ("joy", "😂"),
-    ("eyes", "👀"),
-    ("thinking", "🤔"),
-    ("warning", "⚠️"),
-    ("lock", "🔒"),
-    ("key", "🔑"),
-    ("skull", "💀"),
-    ("ghost", "👻"),
-    ("robot", "🤖"),
-    ("coffee", "☕"),
-    ("bug", "🐛"),
-    ("check", "✅"),
-    ("x", "❌"),
-];
-
 /// Replaces `:name:` tokens with their emoji; unknown names stay literal.
+///
+/// Names resolve through [`emoji::find`], the same table Tab-completion and
+/// the picker offer — so anything the client suggests is something it renders.
 #[must_use]
 pub fn expand_emoji(text: &str) -> String {
     if !text.contains(':') {
@@ -55,15 +31,11 @@ pub fn expand_emoji(text: &str) -> String {
     while let Some(start) = rest.find(':') {
         out.push_str(&rest[..start]);
         let after = &rest[start + 1..];
-        let matched = after.find(':').and_then(|end| {
-            let name = &after[..end];
-            EMOJI
-                .iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, emoji)| (*emoji, end))
-        });
-        if let Some((emoji, end)) = matched {
-            out.push_str(emoji);
+        let matched = after
+            .find(':')
+            .and_then(|end| emoji::find(&after[..end]).map(|glyph| (glyph, end)));
+        if let Some((glyph, end)) = matched {
+            out.push_str(glyph);
             rest = &after[end + 1..];
         } else {
             // Not a shortcode; keep the colon, resume after it so the closing

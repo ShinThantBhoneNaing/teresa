@@ -63,7 +63,9 @@ terminals in *Who Am I* and every hacker movie that got it right.
 - **Actions** — `/shoot @bob` guns someone down and a 💥 flashes on their
   name in the member panel; also `/slap` `/hug` `/highfive` `/hack` `/nuke`
   `/coffee` `/fire` `/rekt` (and freeform `/me`)
-- **Emoji** — Unicode passes through; `:rocket:` `:fire:` shortcodes expand
+- **Emoji** — Unicode passes through; `:rocket:` `:fire:` shortcodes expand;
+  `Tab` completes a half-typed `:roc`, and `Alt+E` opens a searchable picker
+  over the whole catalogue (`/emoji hot` jumps straight to a search)
 - **Every script** — full Unicode end to end, verified with Myanmar (မြန်မာ),
   Cyrillic and emoji; your terminal font does the drawing, TERESA never
   mangles a cluster
@@ -208,7 +210,8 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `Ctrl+W` | room switchboard (fuzzy filter, joins unjoined channels) |
 | `Alt+↑/↓`, `Alt+1…9` | cycle rooms, jump by number |
 | `PgUp/PgDn`, mouse wheel | scrollback (auto-fetches older history) |
-| `Tab` | complete usernames, `@mentions`, `/commands` |
+| `Alt+E` | emoji picker (type to search, arrows to move, enter to insert) |
+| `Tab` | complete usernames, `@mentions`, `/commands`, `:emoji:` |
 | `↑/↓` | input history (your draft survives) |
 | `Ctrl+K` | clear scrollback |
 | `Ctrl+R` | reconnect now |

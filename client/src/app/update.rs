@@ -451,6 +451,9 @@ fn on_key(app: &mut App, key: KeyEvent) {
                 selected: 0,
             });
         }
+        // Alt+E, not Ctrl+E: Ctrl+E is end-of-line below, and readline muscle
+        // memory outranks a nicer mnemonic.
+        (KeyCode::Char('e' | 'E'), false, true) => open_emoji_picker(app),
         (KeyCode::F(1), _, _) => app.overlay = Some(Overlay::Help),
 
         // -- room navigation --
@@ -548,6 +551,40 @@ fn on_overlay_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
 
+        Overlay::EmojiPicker { filter, selected } => match key.code {
+            KeyCode::Esc => app.overlay = None,
+            // Alt+E toggles: the key that opened it closes it.
+            KeyCode::Char('e' | 'E') if key.modifiers.contains(KeyModifiers::ALT) => {
+                app.overlay = None;
+            }
+            KeyCode::Left => *selected = selected.saturating_sub(1),
+            KeyCode::Right => *selected += 1, // renderer clamps
+            KeyCode::Up => *selected = selected.saturating_sub(EMOJI_COLUMNS),
+            KeyCode::Down => *selected += EMOJI_COLUMNS,
+            KeyCode::Backspace => {
+                filter.pop();
+                *selected = 0;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                filter.push(c);
+                *selected = 0;
+            }
+            KeyCode::Enter => {
+                let choice = emoji_results(app).into_iter().nth(match &app.overlay {
+                    Some(Overlay::EmojiPicker { selected, .. }) => *selected,
+                    _ => 0,
+                });
+                app.overlay = None;
+                if let Some(entry) = choice {
+                    // The glyph, not `:name:` — you picked it by looking at
+                    // it, so the input line should show what you picked.
+                    app.input.insert_str(entry.glyph);
+                    signal_typing(app);
+                }
+            }
+            _ => {}
+        },
+
         // The read-only overlays close on anything sensible.
         Overlay::Help | Overlay::Profile | Overlay::Notifications => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q'))
@@ -556,6 +593,37 @@ fn on_overlay_key(app: &mut App, key: KeyEvent) {
                 app.overlay = None;
             }
         }
+    }
+}
+
+/// Columns in the picker grid. Shared by the renderer and the arrow keys, so
+/// Down always lands where the eye expects.
+pub const EMOJI_COLUMNS: usize = 4;
+
+/// Opens the picker, seeding the search from a `:half` fragment already typed
+/// and swallowing it, so `:roc` + Alt+E continues rather than restarts.
+fn open_emoji_picker(app: &mut App) {
+    let seeded = app
+        .input
+        .fragment()
+        .strip_prefix(':')
+        .map(|stem| stem.strip_suffix(':').unwrap_or(stem).to_owned());
+    if seeded.is_some() {
+        app.input.delete_fragment();
+    }
+    app.overlay = Some(Overlay::EmojiPicker {
+        filter: seeded.unwrap_or_default(),
+        selected: 0,
+    });
+}
+
+/// The picker's visible entries for the current filter. Pub for the renderer,
+/// which must show exactly what Enter will pick.
+#[must_use]
+pub fn emoji_results(app: &App) -> Vec<&'static crate::ui::emoji::Emoji> {
+    match &app.overlay {
+        Some(Overlay::EmojiPicker { filter, .. }) => crate::ui::emoji::search(filter),
+        _ => Vec::new(),
     }
 }
 
@@ -793,6 +861,13 @@ fn execute(app: &mut App, command: Command) {
         },
         Command::Theme(None) => {
             app.local_note(format!("themes: {}", Theme::roster().join(", ")));
+        }
+
+        Command::Emoji(query) => {
+            app.overlay = Some(Overlay::EmojiPicker {
+                filter: query.unwrap_or_default(),
+                selected: 0,
+            });
         }
 
         Command::Clear => clear_active_room(app),
@@ -1207,6 +1282,142 @@ mod tests {
         assert!(app.unseen_activity);
         assert!(app.effects.contains(&Effect::Bell));
         assert!(app.toasts.iter().any(|t| t.kind == ToastKind::Mention));
+    }
+
+    /// Alt+E, the picker's key.
+    fn alt_e() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT)
+    }
+
+    #[test]
+    fn the_emoji_picker_searches_and_inserts_at_the_cursor() {
+        let (mut app, _me, _general) = ready_app();
+
+        update(&mut app, Event::Key(alt_e()));
+        assert!(matches!(app.overlay, Some(Overlay::EmojiPicker { .. })));
+
+        // Typing filters; the first hit for "fire" is :fire: itself.
+        for c in "fire".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        assert_eq!(emoji_results(&app)[0].name, "fire");
+
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+        assert!(app.overlay.is_none(), "picking closes the picker");
+        assert_eq!(app.input.text(), "🔥", "the glyph lands in the input line");
+    }
+
+    #[test]
+    fn the_picker_adopts_a_half_typed_shortcode() {
+        let (mut app, _me, _general) = ready_app();
+
+        for c in "ship it :roc".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(alt_e()));
+
+        // The fragment became the search and left the input line behind.
+        match &app.overlay {
+            Some(Overlay::EmojiPicker { filter, .. }) => assert_eq!(filter, "roc"),
+            other => panic!("expected the picker, got {other:?}"),
+        }
+        assert_eq!(app.input.text(), "ship it ");
+
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+        assert_eq!(app.input.text(), "ship it 🚀");
+    }
+
+    #[test]
+    fn the_picker_closes_without_inserting_on_escape() {
+        let (mut app, _me, _general) = ready_app();
+
+        update(&mut app, Event::Key(alt_e()));
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char('f'))));
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Esc)));
+
+        assert!(app.overlay.is_none());
+        assert_eq!(app.input.text(), "", "escape inserts nothing");
+    }
+
+    #[test]
+    fn arrow_keys_move_by_row_and_never_underflow() {
+        let (mut app, _me, _general) = ready_app();
+        update(&mut app, Event::Key(alt_e()));
+
+        // Up and Left at the origin must not panic or wrap.
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Up)));
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Left)));
+        match &app.overlay {
+            Some(Overlay::EmojiPicker { selected, .. }) => assert_eq!(*selected, 0),
+            other => panic!("expected the picker, got {other:?}"),
+        }
+
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Down)));
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Right)));
+        match &app.overlay {
+            Some(Overlay::EmojiPicker { selected, .. }) => {
+                assert_eq!(*selected, EMOJI_COLUMNS + 1);
+            }
+            other => panic!("expected the picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alt_e_toggles_and_ctrl_e_still_ends_the_line() {
+        let (mut app, _me, _general) = ready_app();
+
+        update(&mut app, Event::Key(alt_e()));
+        update(&mut app, Event::Key(alt_e()));
+        assert!(app.overlay.is_none(), "the opening key also closes it");
+
+        // Ctrl+E kept its readline meaning: cursor to end of line.
+        for c in "abc".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Home)));
+        update(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.overlay.is_none(), "ctrl+e must not open the picker");
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char('!'))));
+        assert_eq!(app.input.text(), "abc!", "ctrl+e moved to end of line");
+    }
+
+    #[test]
+    fn the_emoji_command_opens_the_picker_pre_searched() {
+        let (mut app, _me, _general) = ready_app();
+
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char('/'))));
+        for c in "emoji coffee".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+
+        match &app.overlay {
+            Some(Overlay::EmojiPicker { filter, .. }) => assert_eq!(filter, "coffee"),
+            other => panic!("expected the picker, got {other:?}"),
+        }
+        assert_eq!(emoji_results(&app)[0].name, "coffee");
+    }
+
+    #[test]
+    fn tab_completes_shortcodes_without_shadowing_usernames() {
+        let (mut app, _me, _general) = ready_app();
+
+        for c in ":roc".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Tab)));
+        assert_eq!(app.input.text(), ":rocket:");
+
+        // A plain word still completes against commands, not emoji.
+        app.input.clear();
+        for c in "/joi".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Tab)));
+        assert_eq!(app.input.text(), "/join");
     }
 
     #[test]
