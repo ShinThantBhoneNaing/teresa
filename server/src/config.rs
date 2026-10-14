@@ -25,6 +25,8 @@ pub struct ServerConfig {
     pub motd: Option<String>,
     /// Path of the SQLite database. Created on first run if absent.
     pub database: PathBuf,
+    /// Where shared files are kept. Defaults to `files/` beside the database.
+    pub files_dir: Option<PathBuf>,
     /// TLS settings.
     pub tls: TlsConfig,
     /// Rate-limit settings.
@@ -50,6 +52,7 @@ impl Default for ServerConfig {
             name: "teresa".to_owned(),
             motd: None,
             database: PathBuf::from("teresa.db"),
+            files_dir: None,
             tls: TlsConfig::default(),
             limits: LimitsConfig::default(),
             sessions: SessionConfig::default(),
@@ -99,6 +102,8 @@ pub struct LimitsConfig {
     pub outbox_depth: usize,
     /// Maximum simultaneous connections per user account.
     pub connections_per_user: usize,
+    /// Largest accepted upload, in MiB.
+    pub upload_max_mb: u64,
 }
 
 impl Default for LimitsConfig {
@@ -108,6 +113,7 @@ impl Default for LimitsConfig {
             messages_per_10s: 20,
             outbox_depth: 256,
             connections_per_user: 8,
+            upload_max_mb: 4096,
         }
     }
 }
@@ -131,6 +137,23 @@ impl ServerConfig {
     #[must_use]
     pub const fn addr(&self) -> SocketAddr {
         SocketAddr::new(self.bind, self.port)
+    }
+
+    /// The directory shared files are stored in.
+    #[must_use]
+    pub fn files_path(&self) -> PathBuf {
+        self.files_dir.clone().unwrap_or_else(|| {
+            self.database
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(|| PathBuf::from("files"), |p| p.join("files"))
+        })
+    }
+
+    /// Largest accepted upload, in bytes.
+    #[must_use]
+    pub const fn upload_max_bytes(&self) -> u64 {
+        self.limits.upload_max_mb.saturating_mul(1024 * 1024)
     }
 
     /// How long a session may sit idle before it expires.
@@ -188,6 +211,9 @@ impl ServerConfig {
         if let Some(database) = parse::<PathBuf>("TERESA_DB")? {
             self.database = database;
         }
+        if let Some(files) = parse::<PathBuf>("TERESA_FILES_DIR")? {
+            self.files_dir = Some(files);
+        }
         if let Some(log) = parse::<String>("TERESA_LOG")? {
             self.log = log;
         }
@@ -222,6 +248,7 @@ impl ServerConfig {
             || self.limits.messages_per_10s == 0
             || self.limits.outbox_depth == 0
             || self.limits.connections_per_user == 0
+            || self.limits.upload_max_mb == 0
         {
             anyhow::bail!(
                 "limits must be positive; use a large value to mean 'effectively unlimited'"
@@ -277,6 +304,7 @@ mod tests {
             messages_per_10s = 30
             outbox_depth = 512
             connections_per_user = 4
+            upload_max_mb = 512
 
             [sessions]
             idle_days = 7
@@ -288,6 +316,12 @@ mod tests {
         assert_eq!(config.name, "zion");
         assert!(config.tls.enabled());
         assert!(!config.open_registration);
+        assert_eq!(config.upload_max_bytes(), 512 * 1024 * 1024);
+        assert_eq!(
+            config.files_path(),
+            PathBuf::from("/var/lib/teresa/files"),
+            "files default to living beside the database"
+        );
         assert_eq!(config.session_idle(), Duration::from_secs(7 * 24 * 60 * 60));
         config.validate().expect("must validate");
     }

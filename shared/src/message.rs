@@ -20,6 +20,9 @@ pub enum MessageKind {
     Emote,
     /// Server narration: joins, leaves, topic changes, errors.
     System,
+    /// A shared file, folder or archive. The body is a [`crate::FileCard`]
+    /// as JSON; the bytes themselves travel over HTTP, never the socket.
+    File,
 }
 
 impl MessageKind {
@@ -29,7 +32,7 @@ impl MessageKind {
     /// because someone joined trains people to ignore badges.
     #[must_use]
     pub const fn is_notable(self) -> bool {
-        matches!(self, Self::Chat | Self::Emote)
+        matches!(self, Self::Chat | Self::Emote | Self::File)
     }
 
     /// The lowercase wire name, also used as the storage form.
@@ -39,6 +42,7 @@ impl MessageKind {
             Self::Chat => "chat",
             Self::Emote => "emote",
             Self::System => "system",
+            Self::File => "file",
         }
     }
 }
@@ -51,9 +55,10 @@ impl std::str::FromStr for MessageKind {
             "chat" => Ok(Self::Chat),
             "emote" => Ok(Self::Emote),
             "system" => Ok(Self::System),
+            "file" => Ok(Self::File),
             _ => Err(crate::error::ProtoError::Charset {
                 field: "message kind",
-                reason: "expected one of: chat, emote, system",
+                reason: "expected one of: chat, emote, system, file",
             }),
         }
     }
@@ -200,7 +205,12 @@ mod tests {
 
     #[test]
     fn message_kind_round_trips_through_its_storage_form() {
-        for kind in [MessageKind::Chat, MessageKind::Emote, MessageKind::System] {
+        for kind in [
+            MessageKind::Chat,
+            MessageKind::Emote,
+            MessageKind::System,
+            MessageKind::File,
+        ] {
             assert_eq!(kind.as_str().parse::<MessageKind>().unwrap(), kind);
         }
         assert!("sticker".parse::<MessageKind>().is_err());

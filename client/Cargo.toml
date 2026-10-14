@@ -20,7 +20,7 @@ path = "src/lib.rs"
 teresa-proto.workspace = true
 
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
 futures.workspace = true
 
 # Terminal. Ratatui re-exports crossterm; using that re-export keeps exactly
@@ -36,9 +36,15 @@ ratatui = { version = "0.30", features = ["crossterm", "unstable-rendered-line-i
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
+    "stream",
     "rustls-no-provider",
 ] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+# File transfer. zip with only the deflate codec, on the pure-Rust zlib-rs
+# backend: no C toolchain, and level-1 deflate runs near disk speed.
+zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+sha2 = "0.10"
 
 # Rendering.
 pulldown-cmark = { version = "0.13", default-features = false }

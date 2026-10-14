@@ -42,6 +42,32 @@ Same response shape. Wrong password and unknown user are indistinguishable
 Liveness and a JSON gauge snapshot. No authentication (they leak counts, not
 content; front them with your proxy if that matters to you).
 
+### `POST /api/v1/rooms/{room}/files?name=…&kind=…&entries=…`
+
+`Authorization: Bearer <token>`; the body is the raw file bytes (no
+multipart, no base64). `kind` ∈ `file · folder · zip` (default `file`;
+`folder` means the body is a zip the receiver should unpack), `entries` is
+the packed file count for folders. The caller must be a member of the room.
+
+The server streams the body to disk, hashing it on the way, enforces
+`limits.upload_max_mb` while it arrives, and only then posts an ordinary
+message of kind `file` whose body is the file card as JSON:
+
+```json
+{ "id": "01J…", "name": "src.zip", "size": 50536448,
+  "sha256": "9f3a…", "kind": "folder", "entries": 12 }
+```
+
+`201` → that message. Every room member receives it as a normal `message`
+frame. No request timeout applies.
+
+### `GET /api/v1/files/{id}`
+
+`Authorization: Bearer <token>`; caller must be a member of the room the file
+was shared into. `200` with the raw bytes, `content-length`, and an
+`x-teresa-sha256` header for verification. `404` for unknown ids, `403` for
+non-members.
+
 ### Error body
 
 Every REST failure:

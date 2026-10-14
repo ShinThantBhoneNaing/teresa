@@ -32,15 +32,21 @@ pub struct ClientConfig {
     pub typing_indicators: bool,
     /// 12- or 24-hour clock in timestamps.
     pub clock_24h: bool,
+    /// Where `/get` saves files. Absent = `~/Downloads/teresa`.
+    pub downloads: Option<PathBuf>,
     /// Log file for troubleshooting. Absent by default: chat clients have no
     /// business writing logs unless asked.
     pub log_file: Option<PathBuf>,
 }
 
+/// The team's node: friday-server on the office LAN, found by mDNS. Clients
+/// off the LAN point `--server` (or the config file) somewhere else.
+pub const DEFAULT_SERVER: &str = "friday-server.local";
+
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            server: "127.0.0.1".to_owned(),
+            server: DEFAULT_SERVER.to_owned(),
             port: 7737,
             tls: false,
             theme: "matrix".to_owned(),
@@ -49,6 +55,7 @@ impl Default for ClientConfig {
             title_flash: true,
             typing_indicators: true,
             clock_24h: true,
+            downloads: None,
             log_file: None,
         }
     }
@@ -114,6 +121,17 @@ impl ClientConfig {
         Ok(())
     }
 
+    /// Where downloads land.
+    #[must_use]
+    pub fn downloads_dir(&self) -> PathBuf {
+        self.downloads.clone().unwrap_or_else(|| {
+            dirs::download_dir()
+                .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("teresa")
+        })
+    }
+
     /// Base URL for REST calls.
     #[must_use]
     pub fn http_base(&self) -> String {
@@ -136,8 +154,8 @@ mod tests {
     #[test]
     fn urls_follow_the_tls_switch() {
         let mut config = ClientConfig::default();
-        assert_eq!(config.http_base(), "http://127.0.0.1:7737/api/v1");
-        assert_eq!(config.ws_url(), "ws://127.0.0.1:7737/api/v1/ws");
+        assert_eq!(config.http_base(), "http://friday-server.local:7737/api/v1");
+        assert_eq!(config.ws_url(), "ws://friday-server.local:7737/api/v1/ws");
 
         config.tls = true;
         config.server = "chat.example.com".into();

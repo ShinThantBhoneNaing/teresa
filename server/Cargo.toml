@@ -20,7 +20,7 @@ path = "src/lib.rs"
 teresa-proto.workspace = true
 
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
 futures.workspace = true
 
 axum = { version = "0.8", features = ["ws", "macros"] }

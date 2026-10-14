@@ -63,6 +63,11 @@ terminals in *Who Am I* and every hacker movie that got it right.
 - **Actions** — `/shoot @bob` guns someone down and a 💥 flashes on their
   name in the member panel; also `/slap` `/hug` `/highfive` `/hack` `/nuke`
   `/coffee` `/fire` `/rekt` (and freeform `/me`)
+- **File transfer** — `/send <path>` shares a file or a whole folder (zipped
+  on the fly, unpacked on arrival) into a channel, or `/send @bob <path>`
+  straight to one person. Raw-bytes HTTP streaming in 1 MiB chunks, SHA-256
+  verified on every download, with a live transfer dock: throughput, ETA and
+  a hex readout of the wire
 - **Emoji** — Unicode passes through; `:rocket:` `:fire:` shortcodes expand
 - **Every script** — full Unicode end to end, verified with Myanmar (မြန်မာ),
   Cyrillic and emoji; your terminal font does the drawing, TERESA never
@@ -131,17 +136,39 @@ Environment Variables → Path → New →* `%USERPROFILE%\.cargo\bin`.
 
 ### 3. Run it
 
-```sh
-# on ONE machine — the host (defaults: 127.0.0.1:7737, SQLite ./teresa.db)
-teresad
+The team node runs on **friday-server** (the office Linux box), so on the
+office LAN every dev just runs:
 
-# every dev, in their own terminal
-teresa
+```sh
+teresa            # connects to friday-server.local:7737 by default
 ```
 
-Connecting to a host that isn't your own machine? Point the client at it
-once — `teresa --server <host-address>` — or set it in the config file
-(see below); teammates on Tailscale use the `.ts.net` name.
+Hosting your own node instead (defaults: 127.0.0.1:7737, SQLite ./teresa.db):
+
+```sh
+teresad                              # on the host
+teresa --server <host-address>       # every dev, or set `server` in the config
+```
+
+Teammates on Tailscale use the `.ts.net` name.
+
+### Maintaining the friday node
+
+`scripts/deploy-friday.sh` does the whole job from any dev machine on the LAN:
+syncs the source to friday, builds release binaries there, installs them to
+`~/.local/bin`, writes `~/.config/teresa/server.toml` on first run (bind
+`0.0.0.0`, data in `~/.local/share/teresa/`, `#sevendev` as the landing
+channel) and restarts the `teresad` systemd user service.
+
+```sh
+scripts/deploy-friday.sh           # deploy / update
+scripts/deploy-friday.sh status    # service state + recent log
+scripts/deploy-friday.sh logs      # follow the log
+```
+
+The node speaks plain HTTP inside the LAN — fine for an office network, not
+for the internet. To keep it running with nobody logged in on friday, enable
+lingering once: `ssh -t friday-server 'sudo loginctl enable-linger $USER'`.
 
 First launch, no account — the welcome is fully animated (the logo
 materialises through a violet→sky gradient, the ✦ mark spins beside
@@ -191,6 +218,10 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `/invite <user>` | invite into the current room |
 | `/leave` | leave the current room |
 | `/me <action>` | emote |
+| `/send [@user] <path>` | share a file or folder here, or with one person by DM; folders travel zipped. Spaces and drag-and-dropped paths work unquoted |
+| `/zip [@user] <path>` | same, but compress a single file too |
+| `/get [n\|name]` | pull a shared file (newest, `#n` from its card, or by name) into `~/Downloads/teresa`, SHA-256 verified; folders unpack |
+| `/files` | list the files shared in this room |
 | `/shoot <user>` | gunshot lands on their name 💥 — also `/slap` `/hug` `/highfive` `/hack` `/nuke` `/coffee` `/fire` `/rekt` |
 | `/nick <name>` | change display name |
 | `/status <s> [text]` | online · busy · coding · reviewing · away |
@@ -227,7 +258,7 @@ Written with defaults on first run, at:
 | Windows | `%APPDATA%\teresa\config.toml` |
 
 ```toml
-server = "192.168.1.15"
+server = "friday-server.local"   # the default: the team node
 port = 7737
 tls = true
 theme = "matrix"
@@ -236,6 +267,7 @@ bell = true
 title_flash = true
 typing_indicators = true
 clock_24h = true
+downloads = "/Users/neo/Downloads/teresa"   # where /get saves (this is the default)
 ```
 
 Per-run overrides work everywhere and need no file at all:

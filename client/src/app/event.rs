@@ -6,6 +6,7 @@
 
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 
+use crate::net::transfer::TransferUpdate;
 use crate::net::ws::NetEvent;
 
 /// Anything that can happen to the application.
@@ -23,4 +24,6 @@ pub enum Event {
     Tick,
     /// The network layer reported something.
     Net(NetEvent),
+    /// A file transfer made progress, finished or failed.
+    Transfer(TransferUpdate),
 }

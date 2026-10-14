@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server::Handle;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use teresa_server::repo::sqlite::SqliteStore;
 use teresa_server::services::Core;
 use teresa_server::state::AppState;
@@ -28,8 +28,19 @@ const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(60);
 #[command(name = "teresad", version, about)]
 struct Args {
     /// Path to server.toml. Defaults apply if omitted.
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Make an existing account an admin (works while the server runs).
+    Promote {
+        /// The account's username.
+        username: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,11 +59,27 @@ fn main() -> anyhow::Result<()> {
         .install_default()
         .ok();
 
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("tokio runtime failed to start")?
-        .block_on(serve(config))
+        .context("tokio runtime failed to start")?;
+    match args.command {
+        Some(Command::Promote { username }) => runtime.block_on(promote(config, &username)),
+        None => runtime.block_on(serve(config)),
+    }
+}
+
+/// `teresad promote <user>`: the operator's door into the admin role.
+async fn promote(config: ServerConfig, username: &str) -> anyhow::Result<()> {
+    let store = SqliteStore::open(&config.database)
+        .await
+        .with_context(|| format!("opening database {}", config.database.display()))?;
+    let user = Core::new(store, config)
+        .promote(username)
+        .await
+        .with_context(|| format!("promoting {username}"))?;
+    println!("✦ {} (@{}) is now an admin", user.display_name, user.username);
+    Ok(())
 }
 
 async fn serve(config: ServerConfig) -> anyhow::Result<()> {

@@ -12,8 +12,8 @@
 pub mod sqlite;
 
 use teresa_proto::{
-    MemberRole, Message, MessageId, RoomId, RoomKind, Timestamp, UserId, UserRole, UserStatus,
-    Visibility,
+    FileCard, FileId, FileKind, MemberRole, Message, MessageId, RoomId, RoomKind, Timestamp,
+    UserId, UserRole, UserStatus, Visibility,
 };
 
 use crate::error::Result;
@@ -116,6 +116,44 @@ impl RoomRow {
     }
 }
 
+/// A shared file as stored. The bytes are on disk, named by `id`.
+#[derive(Debug, Clone)]
+pub struct FileRow {
+    /// Stable id; also the on-disk name.
+    pub id: FileId,
+    /// The room it was shared into — the authority for who may download it.
+    pub room_id: RoomId,
+    /// Who uploaded it.
+    pub user_id: UserId,
+    /// Name as shared.
+    pub name: String,
+    /// Stored size in bytes.
+    pub size: u64,
+    /// Hex SHA-256 of the stored bytes.
+    pub sha256: String,
+    /// File, folder or archive.
+    pub kind: FileKind,
+    /// Packed file count, for folders.
+    pub entries: Option<u32>,
+    /// Upload completion time.
+    pub created_at: Timestamp,
+}
+
+impl FileRow {
+    /// The wire card for this file.
+    #[must_use]
+    pub fn to_card(&self) -> FileCard {
+        FileCard {
+            id: self.id,
+            name: self.name.clone(),
+            size: self.size,
+            sha256: self.sha256.clone(),
+            kind: self.kind,
+            entries: self.entries,
+        }
+    }
+}
+
 /// One user's membership of one room.
 #[derive(Debug, Clone)]
 pub struct MembershipRow {
@@ -160,6 +198,8 @@ pub trait UserRepo {
     async fn set_status(&self, id: UserId, status: UserStatus, text: Option<&str>) -> Result<()>;
     /// Updates display name.
     async fn set_display_name(&self, id: UserId, display_name: &str) -> Result<()>;
+    /// Changes server-wide authority.
+    async fn set_role(&self, id: UserId, role: UserRole) -> Result<()>;
     /// Stamps last-seen.
     async fn touch_last_seen(&self, id: UserId, at: Timestamp) -> Result<()>;
     /// Total registered accounts.
@@ -246,4 +286,28 @@ pub trait MessageRepo {
     async fn newest_id(&self, room: RoomId) -> Result<Option<MessageId>>;
     /// Total stored messages.
     async fn count_messages(&self) -> Result<u64>;
+}
+
+/// Shared-file persistence.
+#[allow(async_fn_in_trait)]
+pub trait FileRepo {
+    /// Inserts a file record once its bytes are safely on disk.
+    async fn insert_file(&self, file: &FileRow) -> Result<()>;
+    /// Fetches by id.
+    async fn file_by_id(&self, id: FileId) -> Result<Option<FileRow>>;
+}
+
+/// Bulk housekeeping an admin triggers by hand.
+#[allow(async_fn_in_trait)]
+pub trait MaintenanceRepo {
+    /// (users, messages, files, bytes of files) currently on record.
+    async fn storage_counts(&self) -> Result<(u64, u64, u64, u64)>;
+    /// Files shared strictly before `cutoff`.
+    async fn files_before(&self, cutoff: Timestamp) -> Result<Vec<FileRow>>;
+    /// Deletes file records; returns how many went.
+    async fn delete_files(&self, ids: &[FileId]) -> Result<u64>;
+    /// Deletes messages posted strictly before `cutoff`; returns how many went.
+    async fn delete_messages_before(&self, cutoff: Timestamp) -> Result<u64>;
+    /// Returns free pages to the filesystem and truncates the write-ahead log.
+    async fn compact(&self) -> Result<()>;
 }

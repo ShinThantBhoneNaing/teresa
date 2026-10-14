@@ -1,11 +1,13 @@
 //! HTTP surface: router assembly and middleware.
 
 pub mod auth;
+pub mod files;
 pub mod health;
 pub mod ws;
 
 use std::time::Duration;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tower_http::timeout::TimeoutLayer;
@@ -22,6 +24,14 @@ pub fn router(state: SharedState) -> Router {
     // chat connection is *supposed* to be old.
     let realtime = Router::new().route("/api/v1/ws", get(ws::upgrade));
 
+    // File bodies stream straight to disk, so neither the request timeout nor
+    // the in-memory body cap applies; the service enforces its own size limit
+    // while the bytes are still arriving.
+    let transfer = Router::new()
+        .route("/api/v1/rooms/{room}/files", post(files::upload))
+        .route("/api/v1/files/{id}", get(files::download))
+        .layer(DefaultBodyLimit::disable());
+
     let rest = Router::new()
         .route("/api/v1/auth/register", post(auth::register))
         .route("/api/v1/auth/login", post(auth::login))
@@ -34,6 +44,7 @@ pub fn router(state: SharedState) -> Router {
         ));
 
     realtime
+        .merge(transfer)
         .merge(rest)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

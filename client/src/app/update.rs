@@ -8,8 +8,13 @@
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-use teresa_proto::{ClientFrame, MessageKind, RoomKind, ServerFrame, HISTORY_PAGE_DEFAULT};
+use teresa_proto::file::human_bytes;
+use teresa_proto::{
+    ClientFrame, FileCard, MaintenanceOp, MaintenanceReport, MessageKind, RoomId, RoomKind,
+    ServerFrame, HISTORY_PAGE_DEFAULT,
+};
 
+use crate::net::transfer::{self, Outcome, Stage, TransferUpdate};
 use crate::net::ws::NetEvent;
 use crate::ui::theme::Theme;
 
@@ -26,6 +31,12 @@ const TYPING_EXPIRY: Duration = Duration::from_secs(4);
 const ACTIVATE_WINDOW: Duration = Duration::from_secs(5);
 /// How long an action hit (`/shoot` and friends) flashes on the target's name.
 pub(crate) const FX_DURATION: Duration = Duration::from_secs(4);
+/// How long a finished transfer stays in the dock.
+const TRANSFER_LINGER: Duration = Duration::from_secs(8);
+/// How long a failed one does — long enough to read why.
+const TRANSFER_FAIL_LINGER: Duration = Duration::from_secs(15);
+/// A `/send @user` whose DM has not opened within this is abandoned.
+const DM_SEND_WINDOW: Duration = Duration::from_secs(10);
 
 /// Applies one event.
 pub fn update(app: &mut App, event: Event) {
@@ -36,6 +47,7 @@ pub fn update(app: &mut App, event: Event) {
         Event::Mouse(mouse) => on_mouse(app, mouse),
         Event::Resize => app.dirty = true,
         Event::Tick => on_tick(app),
+        Event::Transfer(update) => on_transfer(app, update),
     }
 }
 
@@ -175,9 +187,20 @@ fn on_frame(app: &mut App, frame: ServerFrame) {
         }
 
         ServerFrame::Joined { room, members } => {
+            let peer = room.peer.clone();
             let id = app.upsert_room(room);
             if let Some(state) = app.rooms.get_mut(&id) {
                 state.members = members;
+            }
+            // A `/send @peer` was waiting for exactly this room.
+            if let Some(peer) = peer {
+                let (ready, waiting) = std::mem::take(&mut app.pending_dm_sends)
+                    .into_iter()
+                    .partition(|send| send.peer == peer);
+                app.pending_dm_sends = waiting;
+                for send in ready {
+                    start_upload(app, id, send.path, send.zip);
+                }
             }
             // Only a Joined we asked for steals the screen; one pushed by the
             // far side of a new DM must not yank the user mid-sentence.
@@ -326,7 +349,14 @@ fn on_message(app: &mut App, message: teresa_proto::Message) {
     let mentioned = !own && message.mentions(&my_name);
     let is_dm = state.info.room.kind == RoomKind::Dm;
     let author_label = message.author_label().to_owned();
-    let preview = preview_of(&message.body);
+    let preview = if message.kind == MessageKind::File {
+        FileCard::from_body(&message.body).map_or_else(
+            |_| "shared a file".to_owned(),
+            |card| format!("⇪ {} ({})", card.name, human_bytes(card.size)),
+        )
+    } else {
+        preview_of(&message.body)
+    };
     let label = state.label();
     let at_tail = state.scroll == 0;
     let action = action_of(&message);
@@ -795,6 +825,165 @@ fn execute(app: &mut App, command: Command) {
             app.local_note(format!("themes: {}", Theme::roster().join(", ")));
         }
 
+        Command::Send { to, path, zip } => {
+            let path = match transfer::resolve_path(&path) {
+                Ok(path) => path,
+                Err(error) => {
+                    app.toast(ToastKind::Error, error);
+                    return;
+                }
+            };
+            let Some(peer) = to else {
+                let Some(room_id) = app.active else {
+                    app.toast(ToastKind::Error, "no room selected — Ctrl+W");
+                    return;
+                };
+                start_upload(app, room_id, path, zip);
+                return;
+            };
+            if app.me.as_ref().is_some_and(|me| me.username == peer) {
+                app.toast(ToastKind::Error, "sending files to yourself? use cp");
+                return;
+            }
+            let dm = app.room_order.iter().copied().find(|id| {
+                app.rooms
+                    .get(id)
+                    .is_some_and(|r| r.info.peer.as_deref() == Some(peer.as_str()))
+            });
+            if let Some(room_id) = dm {
+                start_upload(app, room_id, path, zip);
+            } else {
+                app.local_note(format!(
+                    "opening a secure line to @{peer} for the transfer…"
+                ));
+                app.pending_dm_sends.push(super::PendingDmSend {
+                    peer: peer.clone(),
+                    path,
+                    zip,
+                    at: Instant::now(),
+                });
+                app.send(ClientFrame::OpenDm { username: peer });
+            }
+        }
+
+        Command::Get(which) => {
+            let cards = app.file_cards();
+            if cards.is_empty() {
+                app.toast(ToastKind::Error, "no files shared in this room yet");
+                return;
+            }
+            let picked = match which.as_deref().map(str::trim) {
+                None | Some("") => cards.first(),
+                Some(arg) => {
+                    if let Ok(n) = arg.trim_start_matches('#').parse::<usize>() {
+                        n.checked_sub(1).and_then(|i| cards.get(i))
+                    } else {
+                        let needle = arg.to_lowercase();
+                        cards
+                            .iter()
+                            .find(|(_, card)| card.name.to_lowercase().contains(&needle))
+                    }
+                }
+            };
+            let Some((_, card)) = picked else {
+                app.toast(ToastKind::Error, "no such file — /files lists them");
+                return;
+            };
+            let card = card.clone();
+            if app
+                .transfer_for(card.id)
+                .is_some_and(super::Transfer::active)
+            {
+                app.toast(
+                    ToastKind::Info,
+                    format!("{} is already coming down", card.name),
+                );
+                return;
+            }
+            let id = app.next_transfer;
+            app.next_transfer += 1;
+            let place = app
+                .active_room()
+                .map(super::RoomState::label)
+                .unwrap_or_default();
+            let now = Instant::now();
+            app.transfers.push(super::Transfer {
+                id,
+                upload: false,
+                name: card.landing_name().to_owned(),
+                place,
+                file: Some(card.id),
+                stage: Stage::Receiving {
+                    done: 0,
+                    total: card.size,
+                },
+                started: now,
+                stage_started: now,
+                ended: None,
+                wire: None,
+            });
+            app.effects.push(Effect::Download { id, card });
+        }
+
+        Command::Files => {
+            let lines: Vec<String> = app
+                .file_cards()
+                .iter()
+                .enumerate()
+                .map(|(i, (message, card))| {
+                    let extra = card
+                        .entries
+                        .map(|n| format!(" · {n} files"))
+                        .unwrap_or_default();
+                    format!(
+                        "#{} {} {} · {}{extra} · from {}",
+                        i + 1,
+                        card.kind.badge(),
+                        card.name,
+                        human_bytes(card.size),
+                        message.author_label()
+                    )
+                })
+                .collect();
+            if lines.is_empty() {
+                app.local_note("no files shared here yet — /send <path> to share one");
+            } else {
+                app.local_note(format!(
+                    "{} file(s) in this room — /get <#> to pull one:",
+                    lines.len()
+                ));
+                for line in lines.into_iter().take(20) {
+                    app.local_note(line);
+                }
+            }
+        }
+
+        Command::Admin { op, confirmed } => {
+            let warning = match op {
+                MaintenanceOp::PurgeFiles { older_than_days } => Some(format!(
+                    "⚠ deletes every shared file {} from the node — their cards stay, /get stops working",
+                    age_phrase(older_than_days)
+                )),
+                MaintenanceOp::PurgeMessages { older_than_days } => Some(format!(
+                    "⚠ deletes every message {}, in every room, for everyone — there is no undo",
+                    age_phrase(older_than_days)
+                )),
+                MaintenanceOp::Stats | MaintenanceOp::Compact => None,
+            };
+            match warning {
+                Some(warning) if !confirmed => {
+                    app.local_note(warning);
+                    app.local_note("repeat the command with --yes to go ahead");
+                }
+                _ => {
+                    if warning.is_some() {
+                        app.local_note("⛁ maintenance running on the node…");
+                    }
+                    app.send(ClientFrame::Maintenance { op });
+                }
+            }
+        }
+
         Command::Clear => clear_active_room(app),
 
         Command::Ping => {
@@ -829,6 +1018,178 @@ fn execute(app: &mut App, command: Command) {
 }
 
 // --- shared behaviours -----------------------------------------------------
+
+/// Registers an upload in the dock and asks the main loop to run it.
+fn start_upload(app: &mut App, room: RoomId, path: std::path::PathBuf, zip: bool) {
+    let id = app.next_transfer;
+    app.next_transfer += 1;
+    let is_dir = path.is_dir();
+    let mut name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    if is_dir || zip {
+        name.push_str(".zip");
+    }
+    let place = app
+        .rooms
+        .get(&room)
+        .map(super::RoomState::label)
+        .unwrap_or_default();
+    let now = Instant::now();
+    app.transfers.push(super::Transfer {
+        id,
+        upload: true,
+        name,
+        place,
+        file: None,
+        stage: if is_dir || zip {
+            Stage::Packing { done: 0, total: 0 }
+        } else {
+            Stage::Sending {
+                done: 0,
+                total: std::fs::metadata(&path).map_or(0, |m| m.len()),
+            }
+        },
+        started: now,
+        stage_started: now,
+        ended: None,
+        wire: None,
+    });
+    if let Some(state) = app.rooms.get_mut(&room) {
+        state.scroll = 0;
+    }
+    app.effects.push(Effect::Upload {
+        id,
+        room,
+        path,
+        zip,
+    });
+    app.dirty = true;
+}
+
+/// Applies a progress report, and announces the ending of a transfer.
+fn on_transfer(app: &mut App, update: TransferUpdate) {
+    app.dirty = true;
+    let Some(transfer) = app.transfers.iter_mut().find(|t| t.id == update.id) else {
+        return;
+    };
+    if transfer.ended.is_some() {
+        return; // a late progress tick after the final word
+    }
+    if std::mem::discriminant(&transfer.stage) != std::mem::discriminant(&update.stage) {
+        if let Stage::Sending { total, .. } | Stage::Receiving { total, .. } = transfer.stage {
+            transfer.wire = Some((total, transfer.stage_started.elapsed()));
+        }
+        transfer.stage_started = Instant::now();
+    }
+    let took = transfer.started.elapsed();
+    transfer.stage = update.stage;
+
+    let ending = match &transfer.stage {
+        Stage::Done(Outcome::Shared(card)) => {
+            transfer.file = Some(card.id);
+            Some((
+                ToastKind::Success,
+                format!(
+                    "▲ {} → {} · {} in {} · sha256 {}…",
+                    card.name,
+                    transfer.place,
+                    human_bytes(card.size),
+                    clock_of(took),
+                    &card.sha256[..card.sha256.len().min(8)]
+                ),
+            ))
+        }
+        Stage::Done(Outcome::Saved(path)) => Some((
+            ToastKind::Success,
+            format!("▼ verified ✔ saved to {}", path.display()),
+        )),
+        Stage::Failed(reason) => {
+            Some((ToastKind::Error, format!("✖ {} — {reason}", transfer.name)))
+        }
+        _ => None,
+    };
+    if let Some((kind, text)) = ending {
+        transfer.ended = Some(Instant::now());
+        let note = match &transfer.stage {
+            Stage::Done(Outcome::Saved(path)) => {
+                Some(format!("▼ {} landed at {}", transfer.name, path.display()))
+            }
+            _ => None,
+        };
+        if let Some(note) = note {
+            app.local_note(note);
+        }
+        app.toast(kind, text);
+    }
+}
+
+/// "older than 30 days" / "regardless of age".
+fn age_phrase(days: u32) -> String {
+    match days {
+        0 => "regardless of age".to_owned(),
+        1 => "older than 1 day".to_owned(),
+        n => format!("older than {n} days"),
+    }
+}
+
+/// Renders a maintenance report into the active room as a small readout.
+fn on_maintenance(app: &mut App, report: &MaintenanceReport) {
+    let stats = report.stats;
+    let node = app
+        .server
+        .as_ref()
+        .map_or_else(|| "node".to_owned(), |s| s.name.clone());
+    let done = match report.op {
+        MaintenanceOp::Stats => None,
+        MaintenanceOp::PurgeFiles { .. } => Some(format!(
+            "removed {} file(s), freed {}",
+            report.removed,
+            human_bytes(report.freed_bytes)
+        )),
+        MaintenanceOp::PurgeMessages { .. } => Some(format!(
+            "removed {} message(s), freed {}",
+            report.removed,
+            human_bytes(report.freed_bytes)
+        )),
+        MaintenanceOp::Compact => Some(format!(
+            "database compacted, freed {}",
+            human_bytes(report.freed_bytes)
+        )),
+    };
+    app.local_note(format!("⛁ STORAGE · {node}"));
+    app.local_note(format!(
+        "  database  {:>10}  ·  {} messages · {} users",
+        human_bytes(stats.db_bytes),
+        stats.messages,
+        stats.users
+    ));
+    app.local_note(format!(
+        "  files     {:>10}  ·  {} shared",
+        human_bytes(stats.file_bytes),
+        stats.files
+    ));
+    app.local_note(format!(
+        "  total     {:>10}",
+        human_bytes(stats.db_bytes + stats.file_bytes)
+    ));
+    if let Some(done) = done {
+        app.local_note(format!("  ✔ {done}"));
+        app.toast(ToastKind::Success, format!("⛁ {done}"));
+    }
+}
+
+/// `m:ss` for toasts.
+fn clock_of(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs_f32();
+    if secs < 10.0 {
+        format!("{secs:.1}s")
+    } else {
+        let secs = elapsed.as_secs();
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
 
 fn activate_room(app: &mut App, id: teresa_proto::RoomId) {
     app.active = Some(id);
@@ -984,6 +1345,35 @@ fn on_tick(app: &mut App) {
         let before = state.fx.len();
         state.fx.retain(|fx| fx.at.elapsed() < FX_DURATION);
         animated |= state.fx.len() != before || !state.fx.is_empty();
+    }
+
+    // Finished transfers bow out of the dock; abandoned DM sends give up.
+    let before = app.transfers.len();
+    app.transfers.retain(|t| {
+        let linger = if matches!(t.stage, Stage::Failed(_)) {
+            TRANSFER_FAIL_LINGER
+        } else {
+            TRANSFER_LINGER
+        };
+        t.ended.is_none_or(|at| at.elapsed() < linger)
+    });
+    animated |= app.transfers.len() != before || !app.transfers.is_empty();
+
+    let expired: Vec<String> = app
+        .pending_dm_sends
+        .iter()
+        .filter(|send| send.at.elapsed() >= DM_SEND_WINDOW)
+        .map(|send| send.peer.clone())
+        .collect();
+    if !expired.is_empty() {
+        app.pending_dm_sends
+            .retain(|send| send.at.elapsed() < DM_SEND_WINDOW);
+        for peer in expired {
+            app.toast(
+                ToastKind::Error,
+                format!("could not open a line to @{peer} — transfer cancelled"),
+            );
+        }
     }
 
     // Keep animating while anything on screen moves: the boot splash, the
@@ -1562,5 +1952,133 @@ mod tests {
         );
         assert!(app.rtt_ms.is_some());
         assert!(app.pending_pings.is_empty());
+    }
+
+    fn submit_line(app: &mut App, line: &str) {
+        execute(app, parse(line));
+    }
+
+    #[test]
+    fn send_queues_an_upload_into_the_active_room_and_docks_it() {
+        let (mut app, _, general) = ready_app();
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("notes.md");
+        std::fs::write(&file, "# notes").unwrap();
+
+        submit_line(&mut app, &format!("/send {}", file.display()));
+        assert_eq!(
+            app.effects,
+            vec![Effect::Upload {
+                id: 1,
+                room: general.id,
+                path: file,
+                zip: false
+            }]
+        );
+        assert_eq!(app.transfers.len(), 1);
+        assert!(app.transfers[0].upload);
+        assert_eq!(app.transfers[0].name, "notes.md");
+
+        // A folder is named for the zip it will travel as.
+        submit_line(&mut app, &format!("/send {}", scratch.path().display()));
+        assert!(std::path::Path::new(&app.transfers[1].name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip")));
+    }
+
+    #[test]
+    fn send_to_a_person_opens_the_dm_then_uploads_once_it_exists() {
+        let (mut app, _, _) = ready_app();
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("patch.diff");
+        std::fs::write(&file, "+fix").unwrap();
+
+        submit_line(&mut app, &format!("/send @trinity {}", file.display()));
+        assert_eq!(
+            app.effects,
+            vec![Effect::Send(ClientFrame::OpenDm {
+                username: "trinity".into()
+            })]
+        );
+        assert!(
+            app.transfers.is_empty(),
+            "nothing moves before the line opens"
+        );
+        app.effects.clear();
+
+        let mut dm = joined(Room {
+            kind: RoomKind::Dm,
+            ..room("dm-x-y")
+        });
+        dm.peer = Some("trinity".into());
+        let dm_id = dm.room.id;
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Joined {
+                room: dm,
+                members: vec![],
+            })),
+        );
+        assert!(app.effects.contains(&Effect::Upload {
+            id: 1,
+            room: dm_id,
+            path: file,
+            zip: false
+        }));
+        assert!(app.pending_dm_sends.is_empty());
+        assert_eq!(app.transfers[0].place, "@trinity");
+    }
+
+    #[test]
+    fn get_pulls_the_newest_card_by_default_and_by_number() {
+        let (mut app, me, general) = ready_app();
+        let card = |name: &str| teresa_proto::FileCard {
+            id: teresa_proto::FileId::new(),
+            name: name.into(),
+            size: 42,
+            sha256: "ab".repeat(32),
+            kind: teresa_proto::FileKind::File,
+            entries: None,
+        };
+        let (old, new) = (card("old.txt"), card("new.txt"));
+        for c in [&old, &new] {
+            let mut message = chat(general.id, &me, &c.to_body());
+            message.kind = MessageKind::File;
+            update(
+                &mut app,
+                Event::Net(NetEvent::Frame(ServerFrame::Message { message })),
+            );
+        }
+        app.effects.clear();
+
+        submit_line(&mut app, "/get");
+        assert_eq!(
+            app.effects.pop(),
+            Some(Effect::Download { id: 1, card: new })
+        );
+        submit_line(&mut app, "/get 2");
+        assert_eq!(
+            app.effects.pop(),
+            Some(Effect::Download {
+                id: 2,
+                card: old.clone()
+            })
+        );
+
+        // Already in flight: no duplicate transfer.
+        submit_line(&mut app, "/get old");
+        assert!(app.effects.is_empty());
+
+        // Completion stamps the dock and notes where it landed.
+        update(
+            &mut app,
+            Event::Transfer(TransferUpdate {
+                id: 2,
+                stage: Stage::Done(Outcome::Saved("/tmp/old.txt".into())),
+            }),
+        );
+        assert!(app.transfers.iter().all(|t| t.id != 2 || t.ended.is_some()));
+        submit_line(&mut app, "/get old");
+        assert!(matches!(app.effects.pop(), Some(Effect::Download { .. })));
     }
 }

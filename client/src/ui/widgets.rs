@@ -8,7 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
-use teresa_proto::{MessageKind, RoomKind, UserStatus};
+use teresa_proto::{FileCard, MessageKind, RoomKind, UserStatus};
 use time::UtcOffset;
 
 use crate::app::{App, ConnState, RoomState, ToastKind};
@@ -253,6 +253,8 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut chunks: Vec<Vec<Line<'static>>> = Vec::new();
     let mut lines_gathered = 0usize;
     let mut previous_author: Option<(String, i64)> = None;
+    // `/get` numbering: newest file is #1, matching `App::file_cards`.
+    let mut file_index = 0usize;
 
     // Pending sends render at the very tail, dim, with a spinner.
     let mut pending: Vec<Line<'static>> = room
@@ -320,7 +322,7 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 }
                 chunk.push(line);
             }
-            MessageKind::Chat => {
+            MessageKind::Chat | MessageKind::File => {
                 let username = message
                     .author
                     .as_ref()
@@ -341,7 +343,21 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     who == username && (minute - stamp_minute).abs() <= 3
                 });
 
-                let mut body_lines = markdown::render(&message.body, theme);
+                let card = (message.kind == MessageKind::File)
+                    .then(|| FileCard::from_body(&message.body).ok())
+                    .flatten();
+                let mut body_lines = match card {
+                    Some(card) => {
+                        file_index += 1;
+                        super::transfers::card_lines(
+                            app,
+                            &card,
+                            file_index,
+                            usize::from(inner_width),
+                        )
+                    }
+                    None => markdown::render(&message.body, theme),
+                };
                 if mentioned {
                     body_lines = body_lines
                         .into_iter()

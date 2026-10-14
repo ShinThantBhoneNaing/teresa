@@ -1,6 +1,6 @@
 # TERESA server configuration — every knob, with its default.
 # Run with: teresad --config server.toml
-# Env overrides: TERESA_BIND, TERESA_PORT, TERESA_DB, TERESA_LOG,
+# Env overrides: TERESA_BIND, TERESA_PORT, TERESA_DB, TERESA_FILES_DIR, TERESA_LOG,
 #                TERESA_OPEN_REGISTRATION, TERESA_TLS_CERT, TERESA_TLS_KEY
 
 # Interface + port. The default binds loopback only; set 0.0.0.0 to serve a
@@ -14,6 +14,10 @@ name = "teresa"
 
 # SQLite database file; created (with its parent directory) on first run.
 database = "teresa.db"
+
+# Where shared files (/send) are stored. Default: files/ beside the database.
+# Files of a deleted room are swept from disk by housekeeping.
+#files_dir = "/var/lib/teresa/files"
 
 # The first registered account becomes admin. Close registration once your
 # team is aboard; existing accounts keep working.
@@ -35,6 +39,7 @@ auth_per_minute = 5        # login/register attempts per IP
 messages_per_10s = 20      # posts per connection (typing/pings don't count)
 outbox_depth = 256         # buffered frames per connection before disconnect
 connections_per_user = 8   # simultaneous terminals per account
+upload_max_mb = 4096       # largest file (or zipped folder) one /send may carry
 
 [sessions]
 idle_days = 30             # sliding expiry

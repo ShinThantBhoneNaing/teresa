@@ -12,6 +12,8 @@
 //! - [`user`] — accounts, presence, permissions
 //! - [`room`] — channels, direct messages, membership
 //! - [`message`] — chat lines
+//! - [`file`] — shared files, folders and archives
+//! - [`admin`] — storage maintenance for admins
 //! - [`frame`] — the protocol proper
 //! - [`validate`] — input rules both sides enforce
 //! - [`error`] — shared failure vocabulary
@@ -38,7 +40,9 @@
 // the protocol rather than clarify it.
 #![allow(clippy::module_name_repetitions)]
 
+pub mod admin;
 pub mod error;
+pub mod file;
 pub mod frame;
 pub mod ids;
 pub mod message;
@@ -47,12 +51,14 @@ pub mod stamp;
 pub mod user;
 pub mod validate;
 
+pub use admin::{MaintenanceOp, MaintenanceReport, StorageStats};
 pub use error::{ErrorCode, ProtoError};
+pub use file::{FileCard, FileKind};
 pub use frame::{
     ClientFrame, JoinedRoom, ServerFrame, ServerInfo, HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX,
     PROTOCOL_VERSION,
 };
-pub use ids::{ConnectionId, MessageId, RoomId, UserId};
+pub use ids::{ConnectionId, FileId, MessageId, RoomId, UserId};
 pub use message::{Message, MessageKind};
 pub use room::{dm_participants, dm_room_name, MemberRole, Room, RoomKind, Visibility};
 pub use stamp::Timestamp;

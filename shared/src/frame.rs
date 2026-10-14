@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::admin::{MaintenanceOp, MaintenanceReport};
 use crate::error::{ErrorCode, ProtoError};
 use crate::ids::{MessageId, RoomId, UserId};
 use crate::message::Message;
@@ -146,6 +147,13 @@ pub enum ClientFrame {
     MarkRead {
         /// Room to mark.
         room: RoomId,
+    },
+
+    /// Admin only: inspect or trim the node's storage. Answered with
+    /// [`ServerFrame::Maintenance`].
+    Maintenance {
+        /// What to do.
+        op: MaintenanceOp,
     },
 
     /// Round-trip probe. The server answers with [`ServerFrame::Pong`].
@@ -309,6 +317,12 @@ pub enum ServerFrame {
         message: String,
     },
 
+    /// Answers [`ClientFrame::Maintenance`].
+    Maintenance {
+        /// What happened, and what is left.
+        report: MaintenanceReport,
+    },
+
     /// Answers [`ClientFrame::Ping`].
     Pong {
         /// The nonce from the ping.
@@ -446,6 +460,7 @@ impl ServerFrame {
             | Self::ProfileUpdated { .. }
             | Self::Notice { .. }
             | Self::Error { .. }
+            | Self::Maintenance { .. }
             | Self::Pong { .. } => None,
         }
     }
@@ -566,6 +581,12 @@ mod tests {
             ClientFrame::MarkRead {
                 room: RoomId::new(),
             },
+            ClientFrame::Maintenance {
+                op: MaintenanceOp::PurgeFiles { older_than_days: 30 },
+            },
+            ClientFrame::Maintenance {
+                op: MaintenanceOp::Stats,
+            },
             ClientFrame::Ping { nonce: 42 },
         ]
     }
@@ -645,6 +666,20 @@ mod tests {
                 text: "restarting in 5m".into(),
             },
             ServerFrame::error(ErrorCode::RateLimited, "slow down"),
+            ServerFrame::Maintenance {
+                report: MaintenanceReport {
+                    op: MaintenanceOp::Compact,
+                    removed: 0,
+                    freed_bytes: 4096,
+                    stats: crate::admin::StorageStats {
+                        users: 4,
+                        messages: 472,
+                        files: 2,
+                        file_bytes: 1 << 20,
+                        db_bytes: 225_280,
+                    },
+                },
+            },
             ServerFrame::Pong { nonce: 42 },
         ]
     }

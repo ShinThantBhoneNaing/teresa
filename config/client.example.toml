@@ -1,7 +1,7 @@
 # TERESA client configuration — lives at ~/.config/teresa/config.toml
 # (written with defaults on first run; this file documents every key).
 
-server = "127.0.0.1"       # hostname or IP of your teresad
+server = "friday-server.local"  # the team node (office LAN); 127.0.0.1 for a local teresad
 port = 7737
 tls = false                # true => https/wss, verified against system roots
 
@@ -13,6 +13,9 @@ bell = true                # terminal bell on mentions and DMs
 title_flash = true         # ● in the terminal title on unseen activity
 typing_indicators = true   # show (and send) "is typing"
 clock_24h = true
+
+# Where /get saves shared files (default: ~/Downloads/teresa).
+#downloads = "/home/neo/Downloads/teresa"
 
 # Troubleshooting log (the TUI owns the terminal, so logs go to a file).
 #log_file = "/tmp/teresa.log"

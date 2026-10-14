@@ -408,3 +408,65 @@ fn typed_input_appears_in_the_prompt_and_submits() {
     let text = flat(&screen(&app, 120, 32));
     assert!(text.contains("hello world"), "pending echo visible");
 }
+
+#[test]
+fn shared_files_render_as_cards_and_transfers_dock_above_the_status_bar() {
+    use teresa_client::app::Transfer;
+    use teresa_client::net::transfer::Stage;
+    use teresa_proto::{FileCard, FileId, FileKind};
+
+    let mut app = ready_app();
+    let room_id = app.active.expect("a room is active");
+    let alice = user("Alice", UserStatus::Coding);
+    let card = FileCard {
+        id: FileId::new(),
+        name: "prod-dump-2026-10-14.sql".into(),
+        size: 50_536_448,
+        sha256: "9f3ac2e1".repeat(8),
+        kind: FileKind::File,
+        entries: None,
+    };
+    let mut message = chat(room_id, &alice, &card.to_body());
+    message.kind = MessageKind::File;
+    update(
+        &mut app,
+        Event::Net(NetEvent::Frame(ServerFrame::Message { message })),
+    );
+    let now = Instant::now();
+    app.transfers.push(Transfer {
+        id: 1,
+        upload: true,
+        name: "src.zip".into(),
+        place: "#developers".into(),
+        file: None,
+        stage: Stage::Sending {
+            done: 38 * 1024 * 1024,
+            total: 61 * 1024 * 1024,
+        },
+        started: now - Duration::from_secs(2),
+        stage_started: now - Duration::from_secs(1),
+        ended: None,
+        wire: None,
+    });
+    app.toasts.clear();
+
+    let rows = screen(&app, 120, 32);
+    let text = flat(&rows);
+    if std::env::var_os("TERESA_SHOW_SCREEN").is_some() {
+        println!("{text}");
+    }
+    assert!(text.contains("▣ FILE"), "card badge");
+    assert!(text.contains("prod-dump-2026-10-14.sql"));
+    assert!(text.contains("48.2 MiB"));
+    assert!(text.contains("/get 1"), "card says how to pull it");
+    assert!(text.contains("▲ TX"), "dock shows the upload");
+    assert!(text.contains("src.zip"));
+    assert!(text.contains("ETA"));
+
+    // The dock sits directly above the status bar.
+    let status = rows.iter().position(|r| r.contains("LINK:SECURE")).unwrap();
+    assert!(rows[status - 1].contains("▲ TX"));
+
+    // Narrow terminals still draw something sane.
+    let _ = screen(&app, 60, 20);
+}

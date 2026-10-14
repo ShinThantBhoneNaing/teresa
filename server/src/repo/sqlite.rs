@@ -14,13 +14,13 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
 use sqlx::{Row, SqlitePool};
-use teresa_proto::{Author, Message, MessageId, RoomId, Timestamp, UserId};
+use teresa_proto::{Author, FileId, Message, MessageId, RoomId, Timestamp, UserId, UserRole};
 
 use crate::error::{Result, ServerError};
 
 use super::{
-    JoinedRoomRow, MembershipRow, MessageRepo, RoomRepo, RoomRow, SessionRepo, SessionRow,
-    UserRepo, UserRow,
+    FileRepo, FileRow, JoinedRoomRow, MaintenanceRepo, MembershipRow, MessageRepo, RoomRepo, RoomRow, SessionRepo,
+    SessionRow, UserRepo, UserRow,
 };
 
 /// The shared SQLite store. Cloning shares the pool.
@@ -263,6 +263,15 @@ impl UserRepo for SqliteStore {
     async fn set_display_name(&self, id: UserId, display_name: &str) -> Result<()> {
         sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
             .bind(display_name)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_role(&self, id: UserId, role: UserRole) -> Result<()> {
+        sqlx::query("UPDATE users SET role = ? WHERE id = ?")
+            .bind(role.as_str())
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
@@ -582,6 +591,109 @@ impl RoomRepo for SqliteStore {
         sqlx::query("DELETE FROM room_invites WHERE room_id = ? AND user_id = ?")
             .bind(room.to_string())
             .bind(user.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+fn file_from_row(row: &SqliteRow) -> Result<FileRow> {
+    let size: i64 = row.try_get("size")?;
+    let entries: Option<i64> = row.try_get("entries")?;
+    Ok(FileRow {
+        id: parse_stored(row.try_get("id")?, "file id")?,
+        room_id: parse_stored(row.try_get("room_id")?, "room id")?,
+        user_id: parse_stored(row.try_get("user_id")?, "user id")?,
+        name: row.try_get("name")?,
+        size: size.max(0) as u64,
+        sha256: row.try_get("sha256")?,
+        kind: parse_stored(row.try_get("kind")?, "file kind")?,
+        entries: entries.map(|n| n.max(0) as u32),
+        created_at: Timestamp::from_millis(row.try_get("created_at")?),
+    })
+}
+
+impl FileRepo for SqliteStore {
+    async fn insert_file(&self, file: &FileRow) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO files
+               (id, room_id, user_id, name, size, sha256, kind, entries, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(file.id.to_string())
+        .bind(file.room_id.to_string())
+        .bind(file.user_id.to_string())
+        .bind(&file.name)
+        .bind(i64::try_from(file.size).unwrap_or(i64::MAX))
+        .bind(&file.sha256)
+        .bind(file.kind.as_str())
+        .bind(file.entries.map(i64::from))
+        .bind(file.created_at.as_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn file_by_id(&self, id: FileId) -> Result<Option<FileRow>> {
+        sqlx::query("SELECT * FROM files WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(file_from_row)
+            .transpose()
+    }
+}
+
+impl MaintenanceRepo for SqliteStore {
+    async fn storage_counts(&self) -> Result<(u64, u64, u64, u64)> {
+        let row = sqlx::query(
+            "SELECT (SELECT COUNT(*) FROM users) AS users,
+                    (SELECT COUNT(*) FROM messages) AS messages,
+                    (SELECT COUNT(*) FROM files) AS files,
+                    (SELECT COALESCE(SUM(size), 0) FROM files) AS file_bytes",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let get = |name: &str| -> Result<u64> { Ok(row.try_get::<i64, _>(name)?.max(0) as u64) };
+        Ok((get("users")?, get("messages")?, get("files")?, get("file_bytes")?))
+    }
+
+    async fn files_before(&self, cutoff: Timestamp) -> Result<Vec<FileRow>> {
+        sqlx::query("SELECT * FROM files WHERE created_at < ? ORDER BY id")
+            .bind(cutoff.as_millis())
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(file_from_row)
+            .collect()
+    }
+
+    async fn delete_files(&self, ids: &[FileId]) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        let mut removed = 0;
+        for id in ids {
+            removed += sqlx::query("DELETE FROM files WHERE id = ?")
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        }
+        tx.commit().await?;
+        Ok(removed)
+    }
+
+    async fn delete_messages_before(&self, cutoff: Timestamp) -> Result<u64> {
+        Ok(sqlx::query("DELETE FROM messages WHERE created_at < ?")
+            .bind(cutoff.as_millis())
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    async fn compact(&self) -> Result<()> {
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&self.pool)
             .await?;
         Ok(())

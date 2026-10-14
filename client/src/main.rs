@@ -22,6 +22,7 @@ use teresa_client::app::{App, Effect};
 use teresa_client::config::ClientConfig;
 use teresa_client::intro::Intro;
 use teresa_client::net::http::{AuthClient, AuthError};
+use teresa_client::net::transfer::{TransferClient, TransferUpdate};
 use teresa_client::net::ws::{self, NetEvent};
 use teresa_client::session::Session;
 use teresa_client::ui;
@@ -289,6 +290,20 @@ async fn run(config: ClientConfig, config_path: PathBuf, session: Session) -> an
         });
     }
 
+    // 1b. File transfers report through their own pipe, forwarded likewise.
+    let (transfer_tx, mut transfer_rx) = mpsc::channel::<TransferUpdate>(256);
+    {
+        let events_tx = events_tx.clone();
+        tokio::spawn(async move {
+            while let Some(update) = transfer_rx.recv().await {
+                if events_tx.send(Event::Transfer(update)).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let transfers = TransferClient::new(&app.config, &session.token);
+
     // 2. Terminal input, on a dedicated OS thread (crossterm reads block).
     {
         let events_tx = events_tx.clone();
@@ -384,6 +399,17 @@ async fn run(config: ClientConfig, config_path: PathBuf, session: Session) -> an
                     let mut out = std::io::stdout();
                     let _ = out.write_all(b"\x07");
                     let _ = out.flush();
+                }
+                Effect::Upload {
+                    id,
+                    room,
+                    path,
+                    zip,
+                } => {
+                    transfers.spawn_upload(id, room, path, zip, transfer_tx.clone());
+                }
+                Effect::Download { id, card } => {
+                    transfers.spawn_download(id, card, transfer_tx.clone());
                 }
                 Effect::Logout => {
                     auth.logout(&session.token).await;

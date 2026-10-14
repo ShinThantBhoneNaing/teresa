@@ -12,13 +12,16 @@ pub mod history;
 pub mod update;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use teresa_proto::{
-    ClientFrame, JoinedRoom, Message, MessageId, Room, RoomId, ServerInfo, User, UserId,
+    ClientFrame, FileCard, FileId, JoinedRoom, Message, MessageId, Room, RoomId, ServerInfo, User,
+    UserId,
 };
 
 use crate::config::ClientConfig;
+use crate::net::transfer::Stage;
 use crate::ui::theme::Theme;
 use history::InputLine;
 
@@ -158,6 +161,53 @@ impl RoomState {
     }
 }
 
+/// One file transfer as the UI tracks it.
+#[derive(Debug)]
+pub struct Transfer {
+    /// Assigned by the reducer; echoed in every update.
+    pub id: u64,
+    /// Up (sharing) or down (fetching).
+    pub upload: bool,
+    /// The name shown in the dock.
+    pub name: String,
+    /// Where it is going or coming from: `#room` or `@peer`.
+    pub place: String,
+    /// For downloads (and finished uploads): the file on the server.
+    pub file: Option<FileId>,
+    /// Latest reported stage.
+    pub stage: Stage,
+    /// When the transfer was requested.
+    pub started: Instant,
+    /// When the current stage began — the clock throughput is measured on.
+    pub stage_started: Instant,
+    /// When it finished or failed; drives how long it lingers in the dock.
+    pub ended: Option<Instant>,
+    /// Bytes moved over the wire and how long that took, once known — the
+    /// numbers the finished row reports.
+    pub wire: Option<(u64, std::time::Duration)>,
+}
+
+impl Transfer {
+    /// Whether the task is still running.
+    #[must_use]
+    pub const fn active(&self) -> bool {
+        self.ended.is_none()
+    }
+}
+
+/// A `/send @user` waiting for its DM room to exist.
+#[derive(Debug)]
+pub struct PendingDmSend {
+    /// The recipient's handle.
+    pub peer: String,
+    /// What to send.
+    pub path: PathBuf,
+    /// Force a zip.
+    pub zip: bool,
+    /// When it was asked for; abandoned if no room turns up.
+    pub at: Instant,
+}
+
 /// A transient popup in the corner of the screen.
 #[derive(Debug)]
 pub struct Toast {
@@ -220,6 +270,24 @@ pub enum Effect {
     ReconnectNow,
     /// Ring the terminal bell.
     Bell,
+    /// Start uploading a file or folder into a room.
+    Upload {
+        /// Transfer id for progress updates.
+        id: u64,
+        /// Destination room.
+        room: RoomId,
+        /// What to send.
+        path: PathBuf,
+        /// Zip even a single file.
+        zip: bool,
+    },
+    /// Start downloading a shared file.
+    Download {
+        /// Transfer id for progress updates.
+        id: u64,
+        /// What to fetch.
+        card: FileCard,
+    },
 }
 
 /// The whole application.
@@ -266,6 +334,12 @@ pub struct App {
     pub next_nonce: u64,
     /// True while there is activity the user has not looked at (title flash).
     pub unseen_activity: bool,
+    /// File transfers, running and recently finished, oldest first.
+    pub transfers: Vec<Transfer>,
+    /// Monotonic source for transfer ids.
+    pub next_transfer: u64,
+    /// `/send @user` requests waiting for their DM room.
+    pub pending_dm_sends: Vec<PendingDmSend>,
     /// Effects for the main loop, drained every iteration.
     pub effects: Vec<Effect>,
     /// The renderer should redraw.
@@ -300,6 +374,9 @@ impl App {
             pending_activate: None,
             next_nonce: 1,
             unseen_activity: false,
+            transfers: Vec::new(),
+            next_transfer: 1,
+            pending_dm_sends: Vec::new(),
             effects: Vec::new(),
             dirty: true,
             quit: false,
@@ -375,6 +452,28 @@ impl App {
         let value = self.next_nonce;
         self.next_nonce += 1;
         format!("n{value:x}")
+    }
+
+    /// File cards in the active room, newest first — the numbering `/get`
+    /// and `/files` share with the `#n` on each card.
+    #[must_use]
+    pub fn file_cards(&self) -> Vec<(&Message, FileCard)> {
+        self.active_room()
+            .map(|room| {
+                room.messages
+                    .iter()
+                    .rev()
+                    .filter(|m| m.kind == teresa_proto::MessageKind::File)
+                    .filter_map(|m| FileCard::from_body(&m.body).ok().map(|card| (m, card)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The newest transfer touching a given server file.
+    #[must_use]
+    pub fn transfer_for(&self, file: FileId) -> Option<&Transfer> {
+        self.transfers.iter().rev().find(|t| t.file == Some(file))
     }
 
     /// All usernames known in the active room, for Tab completion.

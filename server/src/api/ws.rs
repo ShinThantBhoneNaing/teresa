@@ -469,6 +469,13 @@ impl Actor {
                 Ok(())
             }
 
+            ClientFrame::Maintenance { op } => {
+                match self.state.core.maintenance(&self.user, op).await {
+                    Ok(report) => self.reply(ServerFrame::Maintenance { report }).await,
+                    Err(error) => self.reply_error(error).await,
+                }
+            }
+
             ClientFrame::Ping { nonce } => self.reply(ServerFrame::Pong { nonce }).await,
         }
     }

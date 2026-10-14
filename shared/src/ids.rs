@@ -150,6 +150,12 @@ define_id!(
 );
 
 define_id!(
+    /// Identifies one uploaded file — also its name on the server's disk,
+    /// which is safe precisely because a ULID cannot contain a path separator.
+    FileId
+);
+
+define_id!(
     /// Identifies one live client connection.
     ///
     /// A user may hold several of these at once — one per terminal — which is

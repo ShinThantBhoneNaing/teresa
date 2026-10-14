@@ -24,4 +24,6 @@ sleep 0.5
 # Isolated client state so your real identity is untouched.
 HOME_DIR="$DEV_DIR/home"
 mkdir -p "$HOME_DIR"
-HOME="$HOME_DIR" USERPROFILE="$HOME_DIR" ./target/debug/teresa "$@"
+# --server: the client's default is the team node (friday-server); the dev
+# loop must talk to the throwaway server it just started instead.
+HOME="$HOME_DIR" USERPROFILE="$HOME_DIR" ./target/debug/teresa --server 127.0.0.1 "$@"

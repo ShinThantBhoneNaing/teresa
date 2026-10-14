@@ -10,6 +10,7 @@ pub mod highlight;
 pub mod markdown;
 pub mod overlays;
 pub mod theme;
+pub mod transfers;
 pub mod widgets;
 
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -33,9 +34,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         area,
     );
 
-    let [header_area, body_area, status_area, input_area] = Layout::vertical([
+    let [header_area, body_area, dock_area, status_area, input_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
+        Constraint::Length(transfers::dock_height(app)),
         Constraint::Length(1),
         Constraint::Length(3),
     ])
@@ -72,6 +74,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         _ => widgets::messages(frame, app, columns[0]),
     }
 
+    if dock_area.height > 0 {
+        transfers::dock(frame, app, dock_area);
+    }
     widgets::status_bar(frame, app, status_area);
     widgets::input(frame, app, input_area);
 

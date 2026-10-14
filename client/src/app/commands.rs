@@ -3,7 +3,7 @@
 //! Parsing is pure — text in, [`Command`] out — so every command's grammar is
 //! covered by plain unit tests. What a command *does* lives in `update.rs`.
 
-use teresa_proto::{UserStatus, Visibility};
+use teresa_proto::{MaintenanceOp, UserStatus, Visibility};
 
 /// Every command a user can type. `Say` is the fallback: anything that does
 /// not start with `/` is chat.
@@ -58,6 +58,28 @@ pub enum Command {
     },
     /// `/theme [name]` — switch themes, or list them.
     Theme(Option<String>),
+    /// `/send [@user] <path>` (and `/zip …`): share a file or folder here, or
+    /// with one person over DM.
+    Send {
+        /// Recipient for a person-to-person send; `None` = the current room.
+        to: Option<String>,
+        /// The path as typed; resolved by the reducer.
+        path: String,
+        /// Compress even a single file (`/zip`). Folders always travel zipped.
+        zip: bool,
+    },
+    /// `/get [n|name]` — download a shared file: newest, `#n`, or by name.
+    Get(Option<String>),
+    /// `/files` — list the files shared in this room.
+    Files,
+    /// `/admin [stats|files [days]|messages [days]|compact] [--yes]` —
+    /// storage maintenance on the node (admins only).
+    Admin {
+        /// What to do.
+        op: MaintenanceOp,
+        /// `--yes` given: destructive operations may proceed.
+        confirmed: bool,
+    },
     /// `/clear` — clear the current room's scrollback (locally).
     Clear,
     /// `/ping` — measure round-trip time.
@@ -107,6 +129,11 @@ pub fn parse(input: &str) -> Command {
         "nick" | "name" => require_arg(args, |a| Command::Nick(a.to_owned())),
         "status" => parse_status(args),
         "theme" => Command::Theme((!args.is_empty()).then(|| args.to_lowercase())),
+        "send" | "upload" | "share" => parse_send(args, false),
+        "zip" => parse_send(args, true),
+        "get" | "download" | "pull" => Command::Get((!args.is_empty()).then(|| args.to_owned())),
+        "files" | "ls" => Command::Files,
+        "admin" => parse_admin(args),
         "clear" | "cls" => Command::Clear,
         "ping" => Command::Ping,
         "version" | "ver" => Command::Version,
@@ -237,7 +264,7 @@ pub fn action_fx(body: &str) -> Option<(&'static str, String)> {
 pub const COMMAND_NAMES: &[&str] = &[
     "help", "users", "whoami", "rooms", "join", "create", "delete", "invite", "dm", "leave", "me",
     "shoot", "slap", "hug", "highfive", "hack", "nuke", "coffee", "fire", "rekt", "nick", "status",
-    "theme", "clear", "ping", "version", "logout", "quit",
+    "theme", "send", "zip", "get", "files", "admin", "clear", "ping", "version", "logout", "quit",
 ];
 
 fn require_arg(args: &str, build: impl FnOnce(&str) -> Command) -> Command {
@@ -277,6 +304,52 @@ fn parse_create(args: &str) -> Command {
             topic: (!topic_words.is_empty()).then(|| topic_words.join(" ")),
         },
         None => Command::Unknown(String::new()),
+    }
+}
+
+fn parse_send(args: &str, zip: bool) -> Command {
+    let (to, path) = match args.strip_prefix('@') {
+        Some(rest) => match rest.split_once(char::is_whitespace) {
+            Some((user, path)) => (Some(user.to_lowercase()), path.trim()),
+            None => (Some(rest.to_lowercase()), ""),
+        },
+        None => (None, args),
+    };
+    if path.is_empty() {
+        return Command::Unknown(String::new());
+    }
+    Command::Send {
+        to,
+        path: path.to_owned(),
+        zip,
+    }
+}
+
+/// Days kept when `/admin files` names no threshold.
+pub const DEFAULT_FILE_DAYS: u32 = 30;
+/// Days kept when `/admin messages` names no threshold.
+pub const DEFAULT_MESSAGE_DAYS: u32 = 90;
+
+fn parse_admin(args: &str) -> Command {
+    let mut words: Vec<&str> = args.split_whitespace().collect();
+    let confirmed = words.iter().any(|w| matches!(*w, "--yes" | "-y"));
+    words.retain(|w| !matches!(*w, "--yes" | "-y"));
+    let days = |default| match words.get(1) {
+        None => Some(default),
+        Some(w) => w.trim_end_matches('d').parse().ok(),
+    };
+    let op = match words.first().copied() {
+        None | Some("stats" | "status" | "df") => Some(MaintenanceOp::Stats),
+        Some("files") => days(DEFAULT_FILE_DAYS)
+            .map(|older_than_days| MaintenanceOp::PurgeFiles { older_than_days }),
+        Some("messages" | "history") => days(DEFAULT_MESSAGE_DAYS)
+            .map(|older_than_days| MaintenanceOp::PurgeMessages { older_than_days }),
+        Some("compact" | "vacuum") => Some(MaintenanceOp::Compact),
+        Some(_) => None,
+    };
+    match op {
+        Some(op) => Command::Admin { op, confirmed },
+        None => Command::Unknown(format!("/admin {args}")),
     }
 }
 
@@ -453,6 +526,81 @@ mod tests {
             assert_eq!(hit, spec.hit, "/{}", spec.verb);
             assert_eq!(target, "trinity", "/{}", spec.verb);
         }
+    }
+
+    #[test]
+    fn send_takes_an_optional_recipient_and_a_path_with_spaces() {
+        assert_eq!(
+            parse("/send ~/st's project/notes.md"),
+            Command::Send {
+                to: None,
+                path: "~/st's project/notes.md".into(),
+                zip: false
+            }
+        );
+        assert_eq!(
+            parse("/send @Bob ./dist"),
+            Command::Send {
+                to: Some("bob".into()),
+                path: "./dist".into(),
+                zip: false
+            }
+        );
+        assert_eq!(
+            parse("/zip @alice dump.sql"),
+            Command::Send {
+                to: Some("alice".into()),
+                path: "dump.sql".into(),
+                zip: true
+            }
+        );
+        assert!(matches!(parse("/send"), Command::Unknown(_)));
+        assert!(matches!(parse("/send @bob"), Command::Unknown(_)));
+    }
+
+    #[test]
+    fn admin_subcommands_and_confirmation() {
+        assert_eq!(
+            parse("/admin"),
+            Command::Admin {
+                op: MaintenanceOp::Stats,
+                confirmed: false
+            }
+        );
+        assert_eq!(
+            parse("/admin files"),
+            Command::Admin {
+                op: MaintenanceOp::PurgeFiles {
+                    older_than_days: DEFAULT_FILE_DAYS
+                },
+                confirmed: false
+            }
+        );
+        assert_eq!(
+            parse("/admin messages 180d --yes"),
+            Command::Admin {
+                op: MaintenanceOp::PurgeMessages {
+                    older_than_days: 180
+                },
+                confirmed: true
+            }
+        );
+        assert_eq!(
+            parse("/admin files 0 -y"),
+            Command::Admin {
+                op: MaintenanceOp::PurgeFiles { older_than_days: 0 },
+                confirmed: true
+            }
+        );
+        assert!(matches!(parse("/admin files soon"), Command::Unknown(_)));
+        assert!(matches!(parse("/admin reboot"), Command::Unknown(_)));
+    }
+
+    #[test]
+    fn get_and_files() {
+        assert_eq!(parse("/get"), Command::Get(None));
+        assert_eq!(parse("/get 3"), Command::Get(Some("3".into())));
+        assert_eq!(parse("/files"), Command::Files);
     }
 
     #[test]

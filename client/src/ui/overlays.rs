@@ -67,6 +67,16 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]),
         Line::from(vec![key("/delete [room]"), txt("delete a channel you own")]),
         Line::from(vec![key("/dm <user>"), txt("open a direct line")]),
+        Line::from(vec![
+            key("/send [@u] <path>"),
+            txt("share a file or folder (folders zip)"),
+        ]),
+        Line::from(vec![key("/zip [@u] <path>"), txt("same, compressed")]),
+        Line::from(vec![
+            key("/get [n|name]"),
+            txt("pull a shared file, verified"),
+        ]),
+        Line::from(vec![key("/files"), txt("list files shared here")]),
         Line::from(vec![key("/invite <user>"), txt("invite into this room")]),
         Line::from(vec![key("/leave"), txt("leave this room")]),
         Line::from(vec![key("/me <action>"), txt("emote")]),

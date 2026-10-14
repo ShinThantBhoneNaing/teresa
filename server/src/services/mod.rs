@@ -12,7 +12,9 @@
 //! One struct with grouped impls states that honestly; four structs holding
 //! clones of each other would not.
 
+pub mod admin;
 pub mod auth;
+pub mod files;
 pub mod messages;
 pub mod presence;
 pub mod rooms;
@@ -22,7 +24,7 @@ use teresa_proto::{ServerInfo, Timestamp, PROTOCOL_VERSION};
 use crate::config::ServerConfig;
 use crate::error::Result;
 use crate::hub::Hub;
-use crate::repo::{MessageRepo, RoomRepo, SessionRepo, UserRepo};
+use crate::repo::{FileRepo, MaintenanceRepo, MessageRepo, RoomRepo, SessionRepo, UserRepo};
 use crate::security::PasswordHasherService;
 
 /// Everything the application needs from persistence, as one bound.
@@ -30,12 +32,30 @@ use crate::security::PasswordHasherService;
 /// `Clone + Send + Sync + 'static` because the store is shared across
 /// connection actors; the SQLite adapter meets this by cloning its pool.
 pub trait Store:
-    UserRepo + SessionRepo + RoomRepo + MessageRepo + Clone + Send + Sync + 'static
+    UserRepo
+    + SessionRepo
+    + RoomRepo
+    + MessageRepo
+    + FileRepo
+    + MaintenanceRepo
+    + Clone
+    + Send
+    + Sync
+    + 'static
 {
 }
 
 impl<T> Store for T where
-    T: UserRepo + SessionRepo + RoomRepo + MessageRepo + Clone + Send + Sync + 'static
+    T: UserRepo
+        + SessionRepo
+        + RoomRepo
+        + MessageRepo
+        + FileRepo
+        + MaintenanceRepo
+        + Clone
+        + Send
+        + Sync
+        + 'static
 {
 }
 
@@ -121,6 +141,7 @@ impl<S: Store> Core<S> {
             tracing::info!(sessions = purged, "purged expired sessions");
         }
         self.hub.prune();
+        self.sweep_orphaned_files().await;
         Ok(())
     }
 }
@@ -140,13 +161,20 @@ pub(crate) mod testkit {
     use super::*;
 
     #[allow(unused_imports)]
-    pub(crate) use crate::repo::{MessageRepo, RoomRepo, SessionRepo, UserRepo};
+    pub(crate) use crate::repo::{FileRepo, MaintenanceRepo, MessageRepo, RoomRepo, SessionRepo, UserRepo};
 
     /// A core over a fresh in-memory database with default (loopback) config,
     /// seed rooms already planted.
     pub async fn core() -> Core<SqliteStore> {
         let store = SqliteStore::memory().await.expect("in-memory store opens");
-        let core = Core::new(store, ServerConfig::default());
+        let config = ServerConfig {
+            files_dir: Some(
+                std::env::temp_dir()
+                    .join(format!("teresa-test-files-{}", teresa_proto::FileId::new())),
+            ),
+            ..ServerConfig::default()
+        };
+        let core = Core::new(store, config);
         core.bootstrap().await.expect("bootstrap succeeds");
         core
     }
