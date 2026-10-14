@@ -147,10 +147,9 @@ async fn ensure_session(config: &ClientConfig) -> anyhow::Result<Session> {
     // human for credentials.
     if let Err(error) = intro.working("waking the node", auth.healthz()).await {
         match error {
-            AuthError::Unreachable { server, source } => anyhow::bail!(
-                "cannot reach {server}: {source}\n\
-                 start the server (teresad) or point --server at one"
-            ),
+            AuthError::Unreachable { host, source, .. } => {
+                anyhow::bail!("{}", teresa_client::net::http::diagnose(&host, &source))
+            }
             other => anyhow::bail!("that node is not speaking TERESA: {other}"),
         }
     }
@@ -205,11 +204,8 @@ async fn ensure_session(config: &ClientConfig) -> anyhow::Result<Session> {
                 std::thread::sleep(std::time::Duration::from_millis(350));
                 return Ok(session);
             }
-            Err(AuthError::Unreachable { server, source }) => {
-                anyhow::bail!(
-                    "cannot reach {server}: {source}\n\
-                     start the server (teresad) or point --server at one"
-                );
+            Err(AuthError::Unreachable { host, source, .. }) => {
+                anyhow::bail!("{}", teresa_client::net::http::diagnose(&host, &source));
             }
             Err(error) => intro.refused(&error.to_string()),
         }
@@ -226,34 +222,34 @@ fn prompt_line(label: &str) -> anyhow::Result<String> {
 
 /// Reads a password with echo replaced by dots, via raw mode.
 fn prompt_password(label: &str) -> anyhow::Result<String> {
-    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-
     print!("{label}");
     std::io::stdout().flush()?;
 
     terminal::enable_raw_mode()?;
     let mut password = String::new();
     let result = loop {
-        match term_event::read()? {
-            TermEvent::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Enter => break Ok(std::mem::take(&mut password)),
-                KeyCode::Backspace => {
-                    if password.pop().is_some() {
-                        print!("\u{8} \u{8}");
-                        std::io::stdout().flush()?;
-                    }
+        let TermEvent::Key(key) = term_event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match teresa_client::session::password_key(&mut password, key) {
+            teresa_client::session::PasswordKey::Done => break Ok(std::mem::take(&mut password)),
+            teresa_client::session::PasswordKey::Cancel => {
+                break Err(anyhow::anyhow!("cancelled"));
+            }
+            teresa_client::session::PasswordKey::Erased(n) => {
+                for _ in 0..n {
+                    print!("\u{8} \u{8}");
                 }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    break Err(anyhow::anyhow!("cancelled"));
-                }
-                KeyCode::Char(c) => {
-                    password.push(c);
-                    print!("•");
-                    std::io::stdout().flush()?;
-                }
-                _ => {}
-            },
-            _ => {}
+                std::io::stdout().flush()?;
+            }
+            teresa_client::session::PasswordKey::Typed => {
+                print!("•");
+                std::io::stdout().flush()?;
+            }
+            teresa_client::session::PasswordKey::Ignored => {}
         }
     };
     terminal::disable_raw_mode()?;

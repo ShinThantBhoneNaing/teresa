@@ -85,6 +85,65 @@ impl Session {
     }
 }
 
+/// What one keypress did to a password being typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordKey {
+    /// Enter: the password is complete.
+    Done,
+    /// Ctrl+C: give up.
+    Cancel,
+    /// This many characters were erased; take that many dots off the screen.
+    Erased(usize),
+    /// One character was added; show a dot.
+    Typed,
+    /// Nothing changed.
+    Ignored,
+}
+
+/// Applies one keypress to a password being typed blind.
+///
+/// Terminals disagree on what Backspace sends: most report it as Backspace,
+/// some as Ctrl+H, some as a raw DEL (0x7f) or BS (0x08) character. All of
+/// them, and the Delete key, erase — none of them may ever become part of the
+/// password, which is exactly the bug of a dot appearing instead.
+pub fn password_key(
+    password: &mut String,
+    key: ratatui::crossterm::event::KeyEvent,
+) -> PasswordKey {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Enter => PasswordKey::Done,
+        KeyCode::Char('c') if ctrl => PasswordKey::Cancel,
+        KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('\u{7f}' | '\u{8}') => {
+            erase(password, 1)
+        }
+        KeyCode::Char('h') if ctrl => erase(password, 1),
+        KeyCode::Char('u') if ctrl => {
+            let n = password.chars().count();
+            erase(password, n)
+        }
+        KeyCode::Char(c) if !ctrl && !c.is_control() => {
+            password.push(c);
+            PasswordKey::Typed
+        }
+        _ => PasswordKey::Ignored,
+    }
+}
+
+fn erase(password: &mut String, n: usize) -> PasswordKey {
+    let mut erased = 0;
+    while erased < n && password.pop().is_some() {
+        erased += 1;
+    }
+    if erased == 0 {
+        PasswordKey::Ignored
+    } else {
+        PasswordKey::Erased(erased)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +204,60 @@ mod tests {
         let path = dir.path().join("session.toml");
         std::fs::write(&path, "not valid toml [[[").unwrap();
         assert!(Session::load(&path, "127.0.0.1").is_none());
+    }
+
+    #[test]
+    fn every_flavour_of_backspace_erases_and_never_types() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let press = |pw: &mut String, code| password_key(pw, KeyEvent::from(code));
+
+        let mut pw = String::new();
+        for c in "secret!".chars() {
+            assert_eq!(press(&mut pw, KeyCode::Char(c)), PasswordKey::Typed);
+        }
+        assert_eq!(press(&mut pw, KeyCode::Backspace), PasswordKey::Erased(1));
+        assert_eq!(press(&mut pw, KeyCode::Delete), PasswordKey::Erased(1));
+        assert_eq!(
+            press(&mut pw, KeyCode::Char('\u{7f}')),
+            PasswordKey::Erased(1)
+        );
+        assert_eq!(
+            press(&mut pw, KeyCode::Char('\u{8}')),
+            PasswordKey::Erased(1)
+        );
+        assert_eq!(
+            password_key(
+                &mut pw,
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)
+            ),
+            PasswordKey::Erased(1)
+        );
+        assert_eq!(pw, "se");
+
+        assert_eq!(
+            password_key(
+                &mut pw,
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+            ),
+            PasswordKey::Erased(2)
+        );
+        assert_eq!(
+            press(&mut pw, KeyCode::Backspace),
+            PasswordKey::Ignored,
+            "nothing left"
+        );
+        assert_eq!(
+            press(&mut pw, KeyCode::Char('\u{1b}')),
+            PasswordKey::Ignored
+        );
+        assert!(pw.is_empty());
+
+        assert_eq!(
+            press(&mut pw, KeyCode::Char('မ')),
+            PasswordKey::Typed,
+            "any script"
+        );
+        assert_eq!(press(&mut pw, KeyCode::Enter), PasswordKey::Done);
+        assert_eq!(pw, "မ");
     }
 }

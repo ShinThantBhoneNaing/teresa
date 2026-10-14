@@ -20,6 +20,8 @@ pub enum AuthError {
     /// The server could not be reached at all.
     #[error("cannot reach {server}: {source}")]
     Unreachable {
+        /// The bare host name, for diagnosis.
+        host: String,
         /// Where we tried to go.
         server: String,
         /// The transport-level failure.
@@ -29,6 +31,72 @@ pub enum AuthError {
     /// The server answered something that is not the protocol.
     #[error("unexpected response from server: {0}")]
     Malformed(String),
+}
+
+/// What a failed connection most likely means, and what to do about it —
+/// written for the teammate staring at it, not for whoever wrote the server.
+#[must_use]
+pub fn diagnose(host: &str, error: &reqwest::Error) -> String {
+    let mut chain = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        chain.push_str(": ");
+        chain.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    hint(host, &chain, error.is_timeout())
+}
+
+fn hint(host: &str, chain: &str, timed_out: bool) -> String {
+    let lower = chain.to_lowercase();
+    let mdns = host.to_ascii_lowercase().ends_with(".local");
+    if [
+        "dns error",
+        "failed to lookup",
+        "name or service not known",
+        "nodename nor servname",
+        "no such host",
+        "temporary failure in name resolution",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        let mut text = format!("this machine cannot find \"{host}\" on the network.");
+        if mdns {
+            text.push_str(
+                "\n  · are you on the office LAN (same network as the server)?\
+                 \n  · Linux: .local names need mDNS — install nss-mdns (Arch/Fedora) or\
+                 \n    libnss-mdns (Debian/Ubuntu), or add the server to /etc/hosts\
+                 \n  · or skip names entirely: teresa --server <server-ip>",
+            );
+        } else {
+            text.push_str("\n  · check the spelling, or use the server's IP: teresa --server <ip>");
+        }
+        return text;
+    }
+    if lower.contains("connection refused") {
+        return format!(
+            "{host} answered, but nothing is listening on that port.\
+             \n  · the teresad service is down, or the port is wrong (--port)"
+        );
+    }
+    if timed_out
+        || [
+            "timed out",
+            "no route to host",
+            "network is unreachable",
+            "host is down",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return format!(
+            "{host} did not answer.\
+             \n  · are you on the office LAN? a VPN or guest Wi-Fi can hide the server\
+             \n  · try: ping {host}"
+        );
+    }
+    format!("cannot reach {host}: {chain}")
 }
 
 /// A successful register or login.
@@ -50,6 +118,7 @@ struct ErrorBody {
 #[derive(Debug, Clone)]
 pub struct AuthClient {
     base: String,
+    host: String,
     server_label: String,
     http: reqwest::Client,
 }
@@ -64,6 +133,7 @@ impl AuthClient {
     pub fn new(config: &ClientConfig) -> Self {
         Self {
             base: config.http_base(),
+            host: config.server.clone(),
             server_label: format!("{}:{}", config.server, config.port),
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
@@ -118,6 +188,7 @@ impl AuthClient {
             .send()
             .await
             .map_err(|source| AuthError::Unreachable {
+                host: self.host.clone(),
                 server: self.server_label.clone(),
                 source,
             })?;
@@ -154,6 +225,7 @@ impl AuthClient {
             .send()
             .await
             .map_err(|source| AuthError::Unreachable {
+                host: self.host.clone(),
                 server: self.server_label.clone(),
                 source,
             })?;
@@ -173,5 +245,35 @@ impl AuthClient {
                 message: refusal.message,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hint;
+
+    #[test]
+    fn each_failure_gets_advice_that_fits_it() {
+        let dns = hint(
+            "friday-server.local",
+            "error sending request: client error (Connect): dns error: failed to lookup address information: Name or service not known",
+            false,
+        );
+        assert!(dns.contains("cannot find"));
+        assert!(
+            dns.contains("nss-mdns"),
+            "a .local name gets the mDNS advice"
+        );
+
+        let refused = hint(
+            "192.168.200.113",
+            "tcp connect error: Connection refused (os error 111)",
+            false,
+        );
+        assert!(refused.contains("nothing is listening"));
+
+        let silent = hint("friday-server.local", "operation timed out", true);
+        assert!(silent.contains("did not answer"));
+        assert!(silent.contains("office LAN"));
     }
 }
