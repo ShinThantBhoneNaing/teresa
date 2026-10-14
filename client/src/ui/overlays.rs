@@ -133,7 +133,8 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![key("Ctrl+P · Ctrl+N"), txt("profile · notifications")]),
         Line::from(vec![key("Ctrl+L"), txt("repaint")]),
         Line::from(vec![key("Esc"), txt("close overlay / jump to newest")]),
-        Line::from(vec![key("Ctrl+C"), txt("quit (asks first)")]),
+        Line::from(vec![key("Ctrl+U · Esc"), txt("clear the typed line")]),
+        Line::from(vec![key("Ctrl+C"), txt("clear the line; on empty, quit")]),
     ];
 
     let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));

@@ -265,7 +265,8 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `Ctrl+P` / `Ctrl+N` | profile · notification log |
 | `Ctrl+L` | repaint |
 | `Esc` | close overlay / jump to newest |
-| `Ctrl+C` | quit (asks first) |
+| `Ctrl+U` · `Esc` | clear the typed line |
+| `Ctrl+C` | clear the typed line; on an empty line, quit (asks first) |
 
 ## Configuration
 

@@ -521,7 +521,17 @@ fn on_key(app: &mut App, key: KeyEvent) {
 
     match (key.code, ctrl, alt) {
         // -- application chrome --
-        (KeyCode::Char('c'), true, _) => app.overlay = Some(Overlay::ConfirmQuit),
+        // Like a shell: Ctrl+C first throws away what is typed; only on an
+        // empty line does it mean "quit".
+        (KeyCode::Char('c'), true, _) => {
+            if app.input.is_empty() {
+                app.overlay = Some(Overlay::ConfirmQuit);
+            } else {
+                app.input.clear();
+                stop_typing(app);
+                app.toast(ToastKind::Info, "line cleared — Ctrl+C again to quit");
+            }
+        }
         (KeyCode::Char('k'), true, _) => clear_active_room(app),
         (KeyCode::Char('l'), true, _) => app.dirty = true, // full redraw happens anyway
         (KeyCode::Char('r'), true, _) => {
@@ -555,8 +565,14 @@ fn on_key(app: &mut App, key: KeyEvent) {
         (KeyCode::PageUp, _, _) => scroll_up(app, 10),
         (KeyCode::PageDown, _, _) => scroll_down(app, 10),
         (KeyCode::Esc, _, _) => {
-            if let Some(room) = app.active_room_mut() {
-                room.scroll = 0;
+            let scrolled = app.active_room().is_some_and(|room| room.scroll > 0);
+            if scrolled {
+                if let Some(room) = app.active_room_mut() {
+                    room.scroll = 0;
+                }
+            } else if !app.input.is_empty() {
+                app.input.clear();
+                stop_typing(app);
             }
         }
 
@@ -574,7 +590,10 @@ fn on_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Right, _, _) => app.input.right(),
         (KeyCode::Home, _, _) | (KeyCode::Char('a'), true, _) => app.input.home(),
         (KeyCode::End, _, _) | (KeyCode::Char('e'), true, _) => app.input.end(),
-        (KeyCode::Char('u'), true, _) => app.input.clear(),
+        (KeyCode::Char('u'), true, _) => {
+            app.input.clear();
+            stop_typing(app);
+        }
         (KeyCode::Up, false, false) => app.input.history_prev(),
         (KeyCode::Down, false, false) => app.input.history_next(),
         (KeyCode::Tab, _, _) => {
@@ -2505,5 +2524,33 @@ mod tests {
         submit_line(&mut app, &format!("/get --to {}", file.display()));
         assert!(app.effects.is_empty());
         assert!(app.toasts.iter().any(|t| t.kind == ToastKind::Error));
+    }
+
+    #[test]
+    fn ctrl_c_clears_a_typed_line_before_it_offers_to_quit() {
+        let (mut app, _, _) = ready_app();
+        for c in "a long pasted line".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        let ctrl_c = || Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+
+        update(&mut app, ctrl_c());
+        assert!(app.input.is_empty(), "first Ctrl+C clears the line");
+        assert_eq!(app.overlay, None, "and does not offer to quit");
+
+        update(&mut app, ctrl_c());
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::ConfirmQuit),
+            "empty line: quit prompt"
+        );
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Esc)));
+        assert!(!app.quit);
+
+        for c in "draft".chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Esc)));
+        assert!(app.input.is_empty(), "Esc clears the line too");
     }
 }
