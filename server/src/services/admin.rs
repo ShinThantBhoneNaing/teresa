@@ -6,9 +6,7 @@
 
 use std::path::Path;
 
-use teresa_proto::{
-    validate, MaintenanceOp, MaintenanceReport, StorageStats, Timestamp, UserRole,
-};
+use teresa_proto::{validate, MaintenanceOp, MaintenanceReport, StorageStats, Timestamp, UserRole};
 
 use crate::error::{Result, ServerError};
 use crate::repo::UserRow;
@@ -19,7 +17,11 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 impl<S: Store> Core<S> {
     /// Runs one maintenance operation for an admin.
-    pub async fn maintenance(&self, actor: &UserRow, op: MaintenanceOp) -> Result<MaintenanceReport> {
+    pub async fn maintenance(
+        &self,
+        actor: &UserRow,
+        op: MaintenanceOp,
+    ) -> Result<MaintenanceReport> {
         let current = self
             .store()
             .user_by_id(actor.id)
@@ -162,7 +164,10 @@ mod tests {
 
         core.promote("Friday").await.unwrap();
         // Same cached row as the live connection holds: no reconnect needed.
-        let report = core.maintenance(&friday, MaintenanceOp::Stats).await.unwrap();
+        let report = core
+            .maintenance(&friday, MaintenanceOp::Stats)
+            .await
+            .unwrap();
         assert_eq!(report.stats.users, 2);
         assert!(core.promote("nobody").await.is_err());
     }
@@ -190,7 +195,12 @@ mod tests {
 
         // Too young for a 30-day purge.
         let report = core
-            .maintenance(&admin, MaintenanceOp::PurgeFiles { older_than_days: 30 })
+            .maintenance(
+                &admin,
+                MaintenanceOp::PurgeFiles {
+                    older_than_days: 30,
+                },
+            )
             .await
             .unwrap();
         assert_eq!((report.removed, report.stats.files), (0, 1));
@@ -234,6 +244,8 @@ mod tests {
         assert_eq!(wiped.removed, before);
         assert_eq!(wiped.stats.messages, 0);
 
-        core.maintenance(&admin, MaintenanceOp::Compact).await.unwrap();
+        core.maintenance(&admin, MaintenanceOp::Compact)
+            .await
+            .unwrap();
     }
 }

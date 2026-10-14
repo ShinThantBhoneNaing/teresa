@@ -166,6 +166,17 @@ scripts/deploy-friday.sh status    # service state + recent log
 scripts/deploy-friday.sh logs      # follow the log
 ```
 
+**Keeping friday light.** Two kinds of weight build up, and each has its
+own broom:
+
+- *Chat data* — shared files and old history. Log in as an admin and use
+  `/admin` (see Commands); destructive ones ask for `--yes` first. Make an
+  account admin from the server: `ssh friday-server '~/.local/bin/teresad
+  --config ~/.config/teresa/server.toml promote <username>'`.
+- *Build caches* — each deploy leaves ~1 GB of compiler output and crate
+  downloads. `scripts/deploy-friday.sh clean` deletes them; the running node
+  is untouched and the next deploy simply rebuilds (~6 min).
+
 The node speaks plain HTTP inside the LAN — fine for an office network, not
 for the internet. To keep it running with nobody logged in on friday, enable
 lingering once: `ssh -t friday-server 'sudo loginctl enable-linger $USER'`.
@@ -222,6 +233,10 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `/zip [@user] <path>` | same, but compress a single file too |
 | `/get [n\|name]` | pull a shared file (newest, `#n` from its card, or by name) into `~/Downloads/teresa`, SHA-256 verified; folders unpack |
 | `/files` | list the files shared in this room |
+| `/admin` | *admins:* storage readout — database, messages, shared files |
+| `/admin files [days] --yes` | *admins:* delete shared files older than `days` (default 30; `0` = all) |
+| `/admin messages [days] --yes` | *admins:* delete history older than `days` (default 90), then compact |
+| `/admin compact` | *admins:* give freed database space back to the disk |
 | `/shoot <user>` | gunshot lands on their name 💥 — also `/slap` `/hug` `/highfive` `/hack` `/nuke` `/coffee` `/fire` `/rekt` |
 | `/nick <name>` | change display name |
 | `/status <s> [text]` | online · busy · coding · reviewing · away |

@@ -161,7 +161,9 @@ pub(crate) mod testkit {
     use super::*;
 
     #[allow(unused_imports)]
-    pub(crate) use crate::repo::{FileRepo, MaintenanceRepo, MessageRepo, RoomRepo, SessionRepo, UserRepo};
+    pub(crate) use crate::repo::{
+        FileRepo, MaintenanceRepo, MessageRepo, RoomRepo, SessionRepo, UserRepo,
+    };
 
     /// A core over a fresh in-memory database with default (loopback) config,
     /// seed rooms already planted.

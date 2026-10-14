@@ -582,7 +582,9 @@ mod tests {
                 room: RoomId::new(),
             },
             ClientFrame::Maintenance {
-                op: MaintenanceOp::PurgeFiles { older_than_days: 30 },
+                op: MaintenanceOp::PurgeFiles {
+                    older_than_days: 30,
+                },
             },
             ClientFrame::Maintenance {
                 op: MaintenanceOp::Stats,

@@ -77,6 +77,10 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
             txt("pull a shared file, verified"),
         ]),
         Line::from(vec![key("/files"), txt("list files shared here")]),
+        Line::from(vec![
+            key("/admin [op]"),
+            txt("admin cleanup: stats·files·messages·compact"),
+        ]),
         Line::from(vec![key("/invite <user>"), txt("invite into this room")]),
         Line::from(vec![key("/leave"), txt("leave this room")]),
         Line::from(vec![key("/me <action>"), txt("emote")]),

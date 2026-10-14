@@ -19,8 +19,8 @@ use teresa_proto::{Author, FileId, Message, MessageId, RoomId, Timestamp, UserId
 use crate::error::{Result, ServerError};
 
 use super::{
-    FileRepo, FileRow, JoinedRoomRow, MaintenanceRepo, MembershipRow, MessageRepo, RoomRepo, RoomRow, SessionRepo,
-    SessionRow, UserRepo, UserRow,
+    FileRepo, FileRow, JoinedRoomRow, MaintenanceRepo, MembershipRow, MessageRepo, RoomRepo,
+    RoomRow, SessionRepo, SessionRow, UserRepo, UserRow,
 };
 
 /// The shared SQLite store. Cloning shares the pool.
@@ -656,7 +656,12 @@ impl MaintenanceRepo for SqliteStore {
         .fetch_one(&self.pool)
         .await?;
         let get = |name: &str| -> Result<u64> { Ok(row.try_get::<i64, _>(name)?.max(0) as u64) };
-        Ok((get("users")?, get("messages")?, get("files")?, get("file_bytes")?))
+        Ok((
+            get("users")?,
+            get("messages")?,
+            get("files")?,
+            get("file_bytes")?,
+        ))
     }
 
     async fn files_before(&self, cutoff: Timestamp) -> Result<Vec<FileRow>> {

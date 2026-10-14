@@ -310,6 +310,8 @@ fn on_frame(app: &mut App, frame: ServerFrame) {
             app.toast(ToastKind::Error, format!("{code}: {message}"));
         }
 
+        ServerFrame::Maintenance { report } => on_maintenance(app, &report),
+
         ServerFrame::Pong { nonce } => {
             if let Some(sent) = app.pending_pings.remove(&nonce) {
                 let rtt = sent.elapsed().as_millis() as u64;
@@ -2080,5 +2082,59 @@ mod tests {
         assert!(app.transfers.iter().all(|t| t.id != 2 || t.ended.is_some()));
         submit_line(&mut app, "/get old");
         assert!(matches!(app.effects.pop(), Some(Effect::Download { .. })));
+    }
+
+    #[test]
+    fn destructive_admin_commands_need_yes_and_reports_render() {
+        let (mut app, _, _) = ready_app();
+        submit_line(&mut app, "/admin messages 30");
+        assert!(app.effects.is_empty(), "no --yes, nothing sent");
+
+        submit_line(&mut app, "/admin messages 30 --yes");
+        let op = MaintenanceOp::PurgeMessages {
+            older_than_days: 30,
+        };
+        assert_eq!(
+            app.effects,
+            vec![Effect::Send(ClientFrame::Maintenance { op })]
+        );
+        app.effects.clear();
+
+        submit_line(&mut app, "/admin");
+        assert_eq!(
+            app.effects,
+            vec![Effect::Send(ClientFrame::Maintenance {
+                op: MaintenanceOp::Stats
+            })]
+        );
+
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Maintenance {
+                report: MaintenanceReport {
+                    op,
+                    removed: 12,
+                    freed_bytes: 8192,
+                    stats: teresa_proto::StorageStats {
+                        users: 4,
+                        messages: 460,
+                        files: 0,
+                        file_bytes: 0,
+                        db_bytes: 200_000,
+                    },
+                },
+            })),
+        );
+        let notes: Vec<&str> = app
+            .active_room()
+            .unwrap()
+            .messages
+            .iter()
+            .map(|m| m.body.as_str())
+            .collect();
+        assert!(notes.iter().any(|n| n.contains("STORAGE · zion")));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("removed 12 message(s), freed 8.0 KiB")));
     }
 }

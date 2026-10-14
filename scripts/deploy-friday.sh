@@ -4,6 +4,13 @@
 #   scripts/deploy-friday.sh          sync source, build release, install, restart
 #   scripts/deploy-friday.sh status   service status + last log lines
 #   scripts/deploy-friday.sh logs     follow the server log
+#   scripts/deploy-friday.sh clean    free friday's disk: build output and
+#                                     downloaded crate caches (~1 GB); the
+#                                     running node is untouched, the next
+#                                     deploy just rebuilds from scratch (~6 min)
+#
+# Chat data (old messages, shared files) is trimmed from inside teresa by an
+# admin: /admin, /admin files [days], /admin messages [days].
 #
 # Runs from any dev machine on the office LAN with `ssh friday-server` set up.
 # On friday it lays out:
@@ -28,9 +35,21 @@ status)
 logs)
     exec ssh -t "$HOST" 'journalctl --user -u teresad -f'
     ;;
+clean)
+    remote 'usage() { du -sc "$@" 2>/dev/null | tail -1 | cut -f1; }
+        cd ~
+        targets="teresa-src/target .cargo/registry/cache .cargo/registry/src .cargo/git/checkouts"
+        before=$(usage $targets)
+        rm -rf $targets
+        after=$(usage $targets)
+        echo "✦ freed $(( (before - after) / 1024 )) MiB of build caches on friday"
+        df -h / | tail -1 | awk "{print \"✦ disk: \" \$3 \" used, \" \$4 \" free\"}"
+        systemctl --user is-active teresad >/dev/null && echo "✦ teresad still running"'
+    exit 0
+    ;;
 deploy) ;;
 *)
-    echo "usage: $0 [deploy|status|logs]" >&2
+    echo "usage: $0 [deploy|status|logs|clean]" >&2
     exit 2
     ;;
 esac

@@ -78,7 +78,10 @@ async fn promote(config: ServerConfig, username: &str) -> anyhow::Result<()> {
         .promote(username)
         .await
         .with_context(|| format!("promoting {username}"))?;
-    println!("✦ {} (@{}) is now an admin", user.display_name, user.username);
+    println!(
+        "✦ {} (@{}) is now an admin",
+        user.display_name, user.username
+    );
     Ok(())
 }
 
