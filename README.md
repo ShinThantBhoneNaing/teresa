@@ -172,7 +172,8 @@ own broom:
 - *Chat data* — shared files and old history. Log in as an admin and use
   `/admin` (see Commands); destructive ones ask for `--yes` first. Make an
   account admin from the server: `ssh friday-server '~/.local/bin/teresad
-  --config ~/.config/teresa/server.toml promote <username>'`.
+  --config ~/.config/teresa/server.toml promote <username>'` (or `remove
+  <username>` to delete an account from the server side).
 - *Build caches* — each deploy leaves ~1 GB of compiler output and crate
   downloads. `scripts/deploy-friday.sh clean` deletes them; the running node
   is untouched and the next deploy simply rebuilds (~6 min).
@@ -231,12 +232,15 @@ client. The session token lands in `~/.config/teresa/session.toml` (mode
 | `/me <action>` | emote |
 | `/send [@user] <path>` | share a file or folder here, or with one person by DM; folders travel zipped. Spaces and drag-and-dropped paths work unquoted |
 | `/zip [@user] <path>` | same, but compress a single file too |
-| `/get [n\|name]` | pull a shared file (newest, `#n` from its card, or by name) into `~/Downloads/teresa`, SHA-256 verified; folders unpack |
+| `/get [n\|name] [--to <dir>]` | pull a shared file (newest, `#n` from its card, or by name). Asks where to save, prefilled with your default folder — Tab completes, Ctrl+D saves *and* makes it the default; `--to` skips the question. SHA-256 verified; folders unpack |
+| `/downloads [dir]` | show or set the default download folder (saved in your config) |
 | `/files` | list the files shared in this room |
 | `/admin` | *admins:* storage readout — database, messages, shared files |
 | `/admin files [days] --yes` | *admins:* delete shared files older than `days` (default 30; `0` = all) |
 | `/admin messages [days] --yes` | *admins:* delete history older than `days` (default 90), then compact |
 | `/admin compact` | *admins:* give freed database space back to the disk |
+| `/admin users` | *admins:* list every account — online, role, joined |
+| `/admin remove @user --yes` | *admins:* delete an account: kicked off live, sessions revoked, can't sign in again; their messages stay in history. You can't remove yourself |
 | `/shoot <user>` | gunshot lands on their name 💥 — also `/slap` `/hug` `/highfive` `/hack` `/nuke` `/coffee` `/fire` `/rekt` |
 | `/nick <name>` | change display name |
 | `/status <s> [text]` | online · busy · coding · reviewing · away |
@@ -282,7 +286,7 @@ bell = true
 title_flash = true
 typing_indicators = true
 clock_24h = true
-downloads = "/Users/neo/Downloads/teresa"   # where /get saves (this is the default)
+downloads = "/Users/neo/Downloads/teresa"   # /get's prefilled folder (also /downloads <dir>)
 ```
 
 Per-run overrides work everywhere and need no file at all:

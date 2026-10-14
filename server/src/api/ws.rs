@@ -41,6 +41,8 @@ use crate::state::SharedState;
 
 /// How often the server pings an idle connection.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a kicked connection lingers so its farewell reaches the socket.
+const KICK_FLUSH: Duration = Duration::from_millis(250);
 /// Silence longer than this — no frames, no pongs — means the peer is gone.
 const KEEPALIVE_DEADLINE: Duration = Duration::from_secs(75);
 
@@ -226,6 +228,13 @@ impl Actor {
 
             match input {
                 Input::Control(frame) => {
+                    // An admin removed this account: say so, give the writer
+                    // a moment to flush it, and hang up.
+                    if matches!(frame.as_ref(), ServerFrame::Kicked { .. }) {
+                        let _ = self.mailbox.send(frame).await;
+                        tokio::time::sleep(KICK_FLUSH).await;
+                        break;
+                    }
                     // A push that grants this user a room — an invite accepted
                     // elsewhere, a DM opened from the far side — must also
                     // start the flow of that room's traffic to this socket.
@@ -472,6 +481,28 @@ impl Actor {
             ClientFrame::Maintenance { op } => {
                 match self.state.core.maintenance(&self.user, op).await {
                     Ok(report) => self.reply(ServerFrame::Maintenance { report }).await,
+                    Err(error) => self.reply_error(error).await,
+                }
+            }
+
+            ClientFrame::ListAccounts => match self.state.core.accounts(&self.user).await {
+                Ok(users) => self.reply(ServerFrame::Accounts { users }).await,
+                Err(error) => self.reply_error(error).await,
+            },
+
+            ClientFrame::RemoveAccount { username } => {
+                match self
+                    .state
+                    .core
+                    .remove_account_as(&self.user, &username)
+                    .await
+                {
+                    Ok(user) => {
+                        self.reply(ServerFrame::AccountRemoved {
+                            username: user.username,
+                        })
+                        .await
+                    }
                     Err(error) => self.reply_error(error).await,
                 }
             }

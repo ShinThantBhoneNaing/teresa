@@ -6,7 +6,10 @@
 
 use std::path::Path;
 
-use teresa_proto::{validate, MaintenanceOp, MaintenanceReport, StorageStats, Timestamp, UserRole};
+use teresa_proto::{
+    validate, MaintenanceOp, MaintenanceReport, RoomKind, ServerFrame, StorageStats, Timestamp,
+    User, UserRole,
+};
 
 use crate::error::{Result, ServerError};
 use crate::repo::UserRow;
@@ -64,6 +67,76 @@ impl<S: Store> Core<S> {
         })
     }
 
+    /// Every account, for an admin.
+    pub async fn accounts(&self, actor: &UserRow) -> Result<Vec<User>> {
+        self.require_admin(actor).await?;
+        Ok(self
+            .store()
+            .all_users()
+            .await?
+            .iter()
+            .map(|row| row.to_user(self.hub().is_live(row.id)))
+            .collect())
+    }
+
+    /// An admin deleting someone else's account.
+    ///
+    /// Removing yourself is refused, which also guarantees the node always
+    /// keeps at least one admin: the caller is one, and stays.
+    pub async fn remove_account_as(&self, actor: &UserRow, username: &str) -> Result<UserRow> {
+        self.require_admin(actor).await?;
+        let username = validate::username(username)?;
+        if username == actor.username {
+            return Err(ServerError::Forbidden(
+                "you cannot remove your own account; ask another admin",
+            ));
+        }
+        let removed = self.remove_account(&username, &actor.username).await?;
+        tracing::info!(admin = %actor.username, removed = %removed.username, "account removed");
+        Ok(removed)
+    }
+
+    /// Deletes an account: live terminals are told and dropped, sessions,
+    /// memberships and invites go, and every room it was in hears it leave.
+    /// Messages it wrote stay in history under its old name. `by` names who
+    /// did it, for the room narration.
+    pub async fn remove_account(&self, username: &str, by: &str) -> Result<UserRow> {
+        let username = validate::username(username)?;
+        let user = self
+            .store()
+            .user_by_username(&username)
+            .await?
+            .ok_or(ServerError::NotFound("user"))?;
+        let rooms = self.store().joined_by(user.id).await?;
+
+        self.hub().send_user(
+            user.id,
+            ServerFrame::Kicked {
+                reason: format!("your account @{} was removed by @{by}", user.username),
+            },
+        );
+        self.store().delete_user(user.id).await?;
+
+        for joined in rooms {
+            let room = joined.room.id;
+            self.hub().publish_room(
+                room,
+                ServerFrame::MemberLeft {
+                    room,
+                    user: user.id,
+                },
+            );
+            if joined.room.kind == RoomKind::Channel {
+                self.system_line(
+                    room,
+                    format!("@{} was removed from the node", user.username),
+                )
+                .await?;
+            }
+        }
+        Ok(user)
+    }
+
     /// Grants admin to an existing account — the operator's way in, used by
     /// `teresad promote`. Returns the updated row.
     pub async fn promote(&self, username: &str) -> Result<UserRow> {
@@ -76,6 +149,21 @@ impl<S: Store> Core<S> {
         self.store().set_role(user.id, UserRole::Admin).await?;
         user.role = UserRole::Admin;
         Ok(user)
+    }
+
+    /// Authority is read fresh from the database, never from the caller's
+    /// cached row, so promotions and removals apply at once.
+    async fn require_admin(&self, actor: &UserRow) -> Result<()> {
+        let current = self
+            .store()
+            .user_by_id(actor.id)
+            .await?
+            .ok_or(ServerError::SessionExpired)?;
+        if current.role == UserRole::Admin {
+            Ok(())
+        } else {
+            Err(ServerError::Forbidden("admins only"))
+        }
     }
 
     /// What the node is holding.
@@ -141,7 +229,7 @@ mod tests {
     use super::super::testkit;
     use super::*;
     use crate::repo::sqlite::SqliteStore;
-    use crate::repo::RoomRepo;
+    use crate::repo::{RoomRepo, UserRepo};
     use crate::services::files::UploadMeta;
     use teresa_proto::{FileCard, FileKind, MessageKind};
 
@@ -170,6 +258,79 @@ mod tests {
             .unwrap();
         assert_eq!(report.stats.users, 2);
         assert!(core.promote("nobody").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_admin_removes_an_account_which_is_kicked_and_forgotten() {
+        let core = testkit::core().await;
+        let admin = actor(&core, "friday").await; // first account: admin
+        let (bob_token, _) = testkit::register(&core, "bob").await;
+        let bob = core.authenticate(&bob_token).await.unwrap();
+        let general = core.store().room_by_name("general").await.unwrap().unwrap();
+        core.post_message(&bob, general.id, "my last words", MessageKind::Chat)
+            .await
+            .unwrap();
+
+        // Bob's terminal is live.
+        let (control_tx, mut control) = tokio::sync::mpsc::channel(8);
+        let conn = teresa_proto::ConnectionId::new();
+        core.connect(&bob, conn, control_tx).await.unwrap();
+        let mut room_feed = core.hub().subscribe_room(general.id);
+
+        // Members may not, and nobody may remove themselves.
+        assert!(matches!(
+            core.remove_account_as(&bob, "friday").await.unwrap_err(),
+            ServerError::Forbidden(_)
+        ));
+        assert!(matches!(
+            core.remove_account_as(&admin, "friday").await.unwrap_err(),
+            ServerError::Forbidden(_)
+        ));
+
+        let gone = core
+            .remove_account_as(&admin, "@bob".trim_start_matches('@'))
+            .await
+            .unwrap();
+        assert_eq!(gone.username, "bob");
+
+        // Told, then locked out.
+        let kicked = loop {
+            let frame = control.recv().await.unwrap();
+            if let ServerFrame::Kicked { reason } = frame.as_ref() {
+                break reason.clone();
+            }
+        };
+        assert!(kicked.contains("@friday"));
+        assert!(core.authenticate(&bob_token).await.is_err());
+        assert!(core
+            .store()
+            .user_by_username("bob")
+            .await
+            .unwrap()
+            .is_none());
+
+        // The room hears him leave; his words stay.
+        let left = loop {
+            if let ServerFrame::MemberLeft { user, .. } = room_feed.recv().await.unwrap().as_ref() {
+                break *user;
+            }
+        };
+        assert_eq!(left, bob.id);
+        let (history, _) = core.history(&admin, general.id, None, 50).await.unwrap();
+        assert!(history.iter().any(|m| m.body == "my last words"));
+
+        let names: Vec<String> = core
+            .accounts(&admin)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|u| u.username)
+            .collect();
+        assert_eq!(names, ["friday"]);
+        assert!(
+            core.remove_account_as(&admin, "bob").await.is_err(),
+            "already gone"
+        );
     }
 
     #[tokio::test]

@@ -408,8 +408,8 @@ async fn run(config: ClientConfig, config_path: PathBuf, session: Session) -> an
                 } => {
                     transfers.spawn_upload(id, room, path, zip, transfer_tx.clone());
                 }
-                Effect::Download { id, card } => {
-                    transfers.spawn_download(id, card, transfer_tx.clone());
+                Effect::Download { id, card, dest } => {
+                    transfers.spawn_download(id, card, dest, transfer_tx.clone());
                 }
                 Effect::Logout => {
                     auth.logout(&session.token).await;

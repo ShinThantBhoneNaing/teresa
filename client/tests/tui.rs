@@ -470,3 +470,22 @@ fn shared_files_render_as_cards_and_transfers_dock_above_the_status_bar() {
     // Narrow terminals still draw something sane.
     let _ = screen(&app, 60, 20);
 }
+
+#[test]
+fn status_is_visible_without_the_member_panel() {
+    let app = ready_app();
+    // Too narrow for the right-hand panel.
+    let rows = screen(&app, 80, 24);
+    let text = flat(&rows);
+    assert!(!text.contains("ONLINE —"), "member panel folded away");
+    assert!(
+        text.contains("online"),
+        "presence strip shows the head count"
+    );
+    assert!(
+        text.contains("▶ Alice"),
+        "alice's coding glyph in the strip"
+    );
+    // And beside her name in the chat itself.
+    assert!(rows.iter().any(|r| r.contains("Alice ▶")));
+}

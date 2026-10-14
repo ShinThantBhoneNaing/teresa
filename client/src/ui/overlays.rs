@@ -1,6 +1,8 @@
 //! Modal overlays: help, profile, notifications, the room switcher, quit and
 //! auth-failure dialogs.
 
+use std::fmt::Write as _;
+
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -22,6 +24,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
             switcher(frame, app, area, filter, *selected);
         }
         Some(Overlay::ConfirmQuit) => confirm_quit(frame, app, area),
+        Some(Overlay::SaveAs { card, from, path }) => save_as(frame, app, area, card, from, path),
         Some(Overlay::AuthFailed { message }) => auth_failed(frame, app, area, message),
         None => {}
     }
@@ -74,12 +77,20 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(vec![key("/zip [@u] <path>"), txt("same, compressed")]),
         Line::from(vec![
             key("/get [n|name]"),
-            txt("pull a shared file, verified"),
+            txt("pull a file — asks where to save"),
+        ]),
+        Line::from(vec![
+            key("/downloads [dir]"),
+            txt("show or set the default folder"),
         ]),
         Line::from(vec![key("/files"), txt("list files shared here")]),
         Line::from(vec![
             key("/admin [op]"),
             txt("admin cleanup: stats·files·messages·compact"),
+        ]),
+        Line::from(vec![
+            key("/admin users"),
+            txt("admin: list accounts · remove @user"),
         ]),
         Line::from(vec![key("/invite <user>"), txt("invite into this room")]),
         Line::from(vec![key("/leave"), txt("leave this room")]),
@@ -316,6 +327,85 @@ fn switcher(frame: &mut Frame<'_>, app: &App, area: Rect, filter: &str, selected
     frame.render_widget(Clear, rect);
     frame.render_widget(
         Paragraph::new(Text::from(lines)).block(modal(app, "SWITCHBOARD")),
+        rect,
+    );
+}
+
+/// The `/get` prompt: which file, from whom, and the folder it will land in.
+fn save_as(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    card: &teresa_proto::FileCard,
+    from: &str,
+    path: &str,
+) {
+    let theme = &app.theme;
+    let width = 66.min(area.width.saturating_sub(2));
+    let inner = usize::from(width.saturating_sub(4));
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.primary).bold());
+    let hint = |t: &'static str| Span::styled(t, Style::default().fg(theme.muted));
+
+    // Long paths scroll: the end of what is being typed stays in view.
+    let shown: String = {
+        let chars: Vec<char> = path.chars().collect();
+        let room = inner.saturating_sub(4);
+        if chars.len() > room {
+            std::iter::once('…')
+                .chain(chars[chars.len() - room + 1..].iter().copied())
+                .collect()
+        } else {
+            path.to_owned()
+        }
+    };
+    let mut detail = teresa_proto::file::human_bytes(card.size);
+    if let Some(n) = card.entries {
+        let _ = write!(detail, " · folder of {n} files, unpacked on arrival");
+    }
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" ⬢ ", Style::default().fg(theme.primary)),
+            Span::styled(
+                card.landing_name().to_owned(),
+                Style::default().fg(theme.fg).bold(),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("   {detail} · from {from}"),
+            Style::default().fg(theme.muted),
+        )),
+        Line::default(),
+        Line::from(Span::styled(
+            " save to",
+            Style::default().fg(theme.secondary),
+        )),
+        Line::from(vec![
+            Span::styled(" ❯ ", Style::default().fg(theme.primary).bold()),
+            Span::styled(shown, Style::default().fg(theme.fg)),
+            Span::styled("▏", Style::default().fg(theme.primary)),
+        ]),
+        Line::default(),
+        Line::from(vec![
+            key(" Enter"),
+            hint(" save · "),
+            key("Tab"),
+            hint(" complete · "),
+            key("Ctrl+U"),
+            hint(" clear"),
+        ]),
+        Line::from(vec![
+            key(" Ctrl+D"),
+            hint(" save & make default · "),
+            key("Esc"),
+            hint(" cancel"),
+        ]),
+    ];
+
+    let rect = centered(area, width, lines.len() as u16 + 2);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(modal(app, "SAVE FILE")),
         rect,
     );
 }

@@ -383,6 +383,18 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             Style::default().fg(name_color).add_modifier(Modifier::BOLD),
                         ),
                     ];
+                    // Their live status, beside the name: readable at any
+                    // width, even when the member panel is folded away.
+                    if let Some(member) = message
+                        .author
+                        .as_ref()
+                        .and_then(|a| room.members.iter().find(|m| m.id == a.id))
+                    {
+                        header.push(Span::styled(
+                            format!(" {}", member.status.indicator()),
+                            Style::default().fg(status_color(theme, member.status)),
+                        ));
+                    }
                     if let Some(author) = &message.author {
                         if author.display_name != author.username {
                             header.push(Span::styled(
@@ -454,6 +466,55 @@ pub fn messages(frame: &mut Frame<'_>, app: &App, area: Rect) {
             marker,
         );
     }
+}
+
+// --- presence strip ----------------------------------------------------------
+
+/// One line of who is here and what they are up to, for terminals too narrow
+/// for the member panel: `● 3 online  ▶ Alice · fixing login  ◐ Bob`.
+pub fn presence_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let Some(room) = app.active_room() else {
+        return;
+    };
+    let mut online: Vec<_> = room
+        .members
+        .iter()
+        .filter(|m| m.status.is_connected())
+        .collect();
+    // Busy people first: the strip is for "can I interrupt them?".
+    online.sort_by_key(|m| (m.status == UserStatus::Online, m.display_name.clone()));
+
+    let mut spans = vec![Span::styled(
+        format!(" {} online ", online.len()),
+        Style::default().fg(theme.bg).bg(theme.success),
+    )];
+    for member in online {
+        spans.push(Span::styled(
+            format!("  {} ", member.status.indicator()),
+            Style::default().fg(status_color(theme, member.status)),
+        ));
+        spans.push(Span::styled(
+            member.display_name.clone(),
+            Style::default().fg(theme.nick_color(&member.username)),
+        ));
+        if let Some(text) = &member.status_text {
+            let clipped: String = text.chars().take(18).collect();
+            let ellipsis = if clipped.len() < text.len() {
+                "…"
+            } else {
+                ""
+            };
+            spans.push(Span::styled(
+                format!(" · {clipped}{ellipsis}"),
+                Style::default().fg(theme.muted),
+            ));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface)),
+        area,
+    );
 }
 
 // --- members ---------------------------------------------------------------

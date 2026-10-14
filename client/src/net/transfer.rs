@@ -95,7 +95,6 @@ pub struct TransferClient {
     base: String,
     token: String,
     http: reqwest::Client,
-    downloads: PathBuf,
 }
 
 impl TransferClient {
@@ -114,7 +113,6 @@ impl TransferClient {
                 .tcp_nodelay(true)
                 .build()
                 .expect("reqwest client builds"),
-            downloads: config.downloads_dir(),
         }
     }
 
@@ -139,12 +137,18 @@ impl TransferClient {
         });
     }
 
-    /// Spawns a download of `card` into the downloads directory.
-    pub fn spawn_download(&self, id: u64, card: FileCard, updates: mpsc::Sender<TransferUpdate>) {
+    /// Spawns a download of `card` into the folder `dest` (created if needed).
+    pub fn spawn_download(
+        &self,
+        id: u64,
+        card: FileCard,
+        dest: PathBuf,
+        updates: mpsc::Sender<TransferUpdate>,
+    ) {
         let client = self.clone();
         tokio::spawn(async move {
             let reporter = Reporter::new(id, updates);
-            let stage = match client.download(&card, &reporter).await {
+            let stage = match client.download(&card, &dest, &reporter).await {
                 Ok(path) => Stage::Done(Outcome::Saved(path)),
                 Err(error) => Stage::Failed(error),
             };
@@ -274,10 +278,15 @@ impl TransferClient {
         FileCard::from_body(&message.body).map_err(|e| e.to_string())
     }
 
-    async fn download(&self, card: &FileCard, reporter: &Reporter) -> Result<PathBuf, String> {
-        tokio::fs::create_dir_all(&self.downloads)
+    async fn download(
+        &self,
+        card: &FileCard,
+        dest: &Path,
+        reporter: &Reporter,
+    ) -> Result<PathBuf, String> {
+        tokio::fs::create_dir_all(dest)
             .await
-            .map_err(|e| format!("{}: {e}", self.downloads.display()))?;
+            .map_err(|e| format!("{}: {e}", dest.display()))?;
 
         let response = self
             .http
@@ -293,9 +302,7 @@ impl TransferClient {
 
         // Land beside the destination under a temporary name, so a half
         // transfer never masquerades as a finished one.
-        let partial = self
-            .downloads
-            .join(format!(".{}.{}.part", card.landing_name(), card.id));
+        let partial = dest.join(format!(".{}.{}.part", card.landing_name(), card.id));
         let digest = match receive(response, &partial, total, reporter).await {
             Ok(digest) => digest,
             Err(error) => {
@@ -310,7 +317,7 @@ impl TransferClient {
             return Err("integrity check failed — sha256 mismatch, file discarded".to_owned());
         }
 
-        let destination = unique_path(&self.downloads, card.landing_name());
+        let destination = unique_path(dest, card.landing_name());
         if card.kind == FileKind::Folder {
             reporter.force(Stage::Unpacking);
             let archive = partial.clone();
@@ -593,6 +600,86 @@ pub fn resolve_path(raw: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("nothing at {unquoted}"))
 }
 
+/// Where a typed download folder points: quotes stripped, `~` expanded.
+/// It need not exist yet — the download creates it — but it must not be a
+/// file.
+///
+/// # Errors
+/// A message for a blank entry or a path that names a file.
+pub fn destination_dir(raw: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|q| trimmed.strip_prefix(*q).and_then(|r| r.strip_suffix(*q)))
+        .unwrap_or(trimmed);
+    if unquoted.is_empty() {
+        return Err("type a folder to save into".to_owned());
+    }
+    let mut path = expand_home(unquoted);
+    if !path.exists() && unquoted.contains('\\') && !cfg!(windows) {
+        let unescaped = expand_home(&unescape(unquoted));
+        if unescaped.exists() {
+            path = unescaped;
+        }
+    }
+    if path.is_file() {
+        return Err(format!("{unquoted} is a file — pick a folder"));
+    }
+    Ok(path)
+}
+
+/// A path for display, with the home directory folded back into `~`.
+#[must_use]
+pub fn tilde(path: &Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// Tab completion for a folder being typed: extends the last component to
+/// the longest prefix shared by the folders that match it, adding a
+/// separator once the match is unique. Returns the input unchanged if
+/// nothing matches.
+#[must_use]
+pub fn complete_dir(typed: &str) -> String {
+    let sep = std::path::MAIN_SEPARATOR;
+    let (parent, stem) = match typed.rfind(['/', sep]) {
+        Some(i) => (&typed[..=i], &typed[i + 1..]),
+        None => ("", typed),
+    };
+    let lookup = if parent.is_empty() {
+        PathBuf::from(".")
+    } else {
+        expand_home(parent)
+    };
+    let Ok(entries) = std::fs::read_dir(lookup) else {
+        return typed.to_owned();
+    };
+    let mut matches: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(stem) && (stem.starts_with('.') || !name.starts_with('.')))
+        .collect();
+    matches.sort();
+    match matches.as_slice() {
+        [] => typed.to_owned(),
+        [only] => format!("{parent}{only}{sep}"),
+        [first, rest @ ..] => {
+            let common = rest.iter().fold(first.clone(), |acc, name| {
+                acc.chars()
+                    .zip(name.chars())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(a, _)| a)
+                    .collect()
+            });
+            format!("{parent}{common}")
+        }
+    }
+}
+
 fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => {
@@ -726,6 +813,44 @@ mod tests {
         }
         assert!(resolve_path("/definitely/not/here").is_err());
         assert!(resolve_path("  ").is_err());
+    }
+
+    #[test]
+    fn download_folders_expand_complete_and_refuse_files() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        std::fs::create_dir_all(root.join("projects/teresa")).unwrap();
+        std::fs::create_dir_all(root.join("photos")).unwrap();
+        std::fs::create_dir_all(root.join("photos-2026")).unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        let base = format!("{}{}", root.display(), std::path::MAIN_SEPARATOR);
+        let sep = std::path::MAIN_SEPARATOR;
+
+        assert_eq!(
+            complete_dir(&format!("{base}pro")),
+            format!("{base}projects{sep}")
+        );
+        assert_eq!(complete_dir(&format!("{base}pho")), format!("{base}photos"));
+        assert_eq!(
+            complete_dir(&format!("{base}not")),
+            format!("{base}not"),
+            "files never complete"
+        );
+        assert_eq!(complete_dir(&format!("{base}zzz")), format!("{base}zzz"));
+
+        assert_eq!(
+            destination_dir(&format!("{base}new/inbox")).unwrap(),
+            root.join("new/inbox")
+        );
+        assert!(destination_dir(&format!("{base}notes.txt")).is_err());
+        assert!(destination_dir("   ").is_err());
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                destination_dir("~/Downloads").unwrap(),
+                home.join("Downloads")
+            );
+            assert_eq!(tilde(&home.join("Downloads")), format!("~{sep}Downloads"));
+        }
     }
 
     #[test]

@@ -121,7 +121,7 @@ fn card_status(app: &App, card: &FileCard, index: usize, inner: usize) -> Vec<Sp
                 if card.kind == FileKind::Folder {
                     "  pull + unpack"
                 } else {
-                    "  pull to ~/Downloads/teresa"
+                    "  pull — you pick where"
                 },
                 Style::default().fg(theme.muted),
             ),

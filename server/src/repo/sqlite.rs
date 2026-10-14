@@ -293,6 +293,24 @@ impl UserRepo for SqliteStore {
             .await?;
         Ok(count.max(0) as u64)
     }
+
+    async fn all_users(&self) -> Result<Vec<UserRow>> {
+        sqlx::query("SELECT * FROM users ORDER BY username")
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(user_from_row)
+            .collect()
+    }
+
+    async fn delete_user(&self, id: UserId) -> Result<bool> {
+        Ok(sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+            > 0)
+    }
 }
 
 impl SessionRepo for SqliteStore {

@@ -68,8 +68,16 @@ pub enum Command {
         /// Compress even a single file (`/zip`). Folders always travel zipped.
         zip: bool,
     },
-    /// `/get [n|name]` — download a shared file: newest, `#n`, or by name.
-    Get(Option<String>),
+    /// `/get [n|name] [--to <dir>]` — download a shared file: newest, `#n`,
+    /// or by name. Without `--to`, the user is asked where to save it.
+    Get {
+        /// Which file; `None` = the newest.
+        which: Option<String>,
+        /// Destination folder, skipping the save prompt.
+        to: Option<String>,
+    },
+    /// `/downloads [dir]` — show or set the default download folder.
+    Downloads(Option<String>),
     /// `/files` — list the files shared in this room.
     Files,
     /// `/admin [stats|files [days]|messages [days]|compact] [--yes]` —
@@ -78,6 +86,15 @@ pub enum Command {
         /// What to do.
         op: MaintenanceOp,
         /// `--yes` given: destructive operations may proceed.
+        confirmed: bool,
+    },
+    /// `/admin users` — every account on the node (admins only).
+    AdminUsers,
+    /// `/admin remove @user [--yes]` — delete an account (admins only).
+    AdminRemove {
+        /// The account's handle, sigil stripped.
+        username: String,
+        /// `--yes` given.
         confirmed: bool,
     },
     /// `/clear` — clear the current room's scrollback (locally).
@@ -131,7 +148,8 @@ pub fn parse(input: &str) -> Command {
         "theme" => Command::Theme((!args.is_empty()).then(|| args.to_lowercase())),
         "send" | "upload" | "share" => parse_send(args, false),
         "zip" => parse_send(args, true),
-        "get" | "download" | "pull" => Command::Get((!args.is_empty()).then(|| args.to_owned())),
+        "get" | "download" | "pull" => parse_get(args),
+        "downloads" | "savedir" => Command::Downloads((!args.is_empty()).then(|| args.to_owned())),
         "files" | "ls" => Command::Files,
         "admin" => parse_admin(args),
         "clear" | "cls" => Command::Clear,
@@ -262,9 +280,40 @@ pub fn action_fx(body: &str) -> Option<(&'static str, String)> {
 
 /// Commands the completer should offer after a `/`.
 pub const COMMAND_NAMES: &[&str] = &[
-    "help", "users", "whoami", "rooms", "join", "create", "delete", "invite", "dm", "leave", "me",
-    "shoot", "slap", "hug", "highfive", "hack", "nuke", "coffee", "fire", "rekt", "nick", "status",
-    "theme", "send", "zip", "get", "files", "admin", "clear", "ping", "version", "logout", "quit",
+    "help",
+    "users",
+    "whoami",
+    "rooms",
+    "join",
+    "create",
+    "delete",
+    "invite",
+    "dm",
+    "leave",
+    "me",
+    "shoot",
+    "slap",
+    "hug",
+    "highfive",
+    "hack",
+    "nuke",
+    "coffee",
+    "fire",
+    "rekt",
+    "nick",
+    "status",
+    "theme",
+    "send",
+    "zip",
+    "get",
+    "downloads",
+    "files",
+    "admin",
+    "clear",
+    "ping",
+    "version",
+    "logout",
+    "quit",
 ];
 
 fn require_arg(args: &str, build: impl FnOnce(&str) -> Command) -> Command {
@@ -325,6 +374,20 @@ fn parse_send(args: &str, zip: bool) -> Command {
     }
 }
 
+fn parse_get(args: &str) -> Command {
+    let (which, to) = match args.split_once("--to") {
+        Some((which, to)) => (which.trim(), Some(to.trim())),
+        None => (args.trim(), None),
+    };
+    match to {
+        Some("") => Command::Unknown(String::new()),
+        _ => Command::Get {
+            which: (!which.is_empty()).then(|| which.to_owned()),
+            to: to.map(str::to_owned),
+        },
+    }
+}
+
 /// Days kept when `/admin files` names no threshold.
 pub const DEFAULT_FILE_DAYS: u32 = 30;
 /// Days kept when `/admin messages` names no threshold.
@@ -332,12 +395,33 @@ pub const DEFAULT_MESSAGE_DAYS: u32 = 90;
 
 fn parse_admin(args: &str) -> Command {
     let mut words: Vec<&str> = args.split_whitespace().collect();
-    let confirmed = words.iter().any(|w| matches!(*w, "--yes" | "-y"));
-    words.retain(|w| !matches!(*w, "--yes" | "-y"));
+    // Forgiving on purpose: a confirmation typed slightly wrong must not
+    // silently turn into "nothing happened".
+    let is_yes = |w: &str| {
+        matches!(
+            w.trim_start_matches('-').to_lowercase().as_str(),
+            "yes" | "y" | "confirm"
+        )
+    };
+    let confirmed = words.iter().any(|w| is_yes(w));
+    words.retain(|w| !is_yes(w));
     let days = |default| match words.get(1) {
         None => Some(default),
         Some(w) => w.trim_end_matches('d').parse().ok(),
     };
+    match words.first().copied() {
+        Some("users" | "accounts") => return Command::AdminUsers,
+        Some("remove" | "delete" | "rm") => {
+            return match words.get(1) {
+                Some(user) => Command::AdminRemove {
+                    username: strip_at(user).to_lowercase(),
+                    confirmed,
+                },
+                None => Command::Unknown(String::new()),
+            };
+        }
+        _ => {}
+    }
     let op = match words.first().copied() {
         None | Some("stats" | "status" | "df") => Some(MaintenanceOp::Stats),
         Some("files") => days(DEFAULT_FILE_DAYS)
@@ -593,13 +677,64 @@ mod tests {
             }
         );
         assert!(matches!(parse("/admin files soon"), Command::Unknown(_)));
+        assert_eq!(parse("/admin users"), Command::AdminUsers);
+        assert_eq!(
+            parse("/admin remove @Bob --yes"),
+            Command::AdminRemove {
+                username: "bob".into(),
+                confirmed: true
+            }
+        );
+        assert!(matches!(parse("/admin remove"), Command::Unknown(_)));
+        for yes in ["yes", "-yes", "--YES", "confirm", "-y"] {
+            assert_eq!(
+                parse(&format!("/admin remove mytx {yes}")),
+                Command::AdminRemove {
+                    username: "mytx".into(),
+                    confirmed: true
+                },
+                "{yes}"
+            );
+        }
         assert!(matches!(parse("/admin reboot"), Command::Unknown(_)));
     }
 
     #[test]
     fn get_and_files() {
-        assert_eq!(parse("/get"), Command::Get(None));
-        assert_eq!(parse("/get 3"), Command::Get(Some("3".into())));
+        assert_eq!(
+            parse("/get"),
+            Command::Get {
+                which: None,
+                to: None
+            }
+        );
+        assert_eq!(
+            parse("/get 3"),
+            Command::Get {
+                which: Some("3".into()),
+                to: None
+            }
+        );
+        assert_eq!(
+            parse("/get 2 --to ~/st's project/inbox"),
+            Command::Get {
+                which: Some("2".into()),
+                to: Some("~/st's project/inbox".into())
+            }
+        );
+        assert_eq!(
+            parse("/get --to ~/Desktop"),
+            Command::Get {
+                which: None,
+                to: Some("~/Desktop".into())
+            }
+        );
+        assert!(matches!(parse("/get 2 --to"), Command::Unknown(_)));
+        assert_eq!(parse("/downloads"), Command::Downloads(None));
+        assert_eq!(
+            parse("/downloads ~/inbox"),
+            Command::Downloads(Some("~/inbox".into()))
+        );
         assert_eq!(parse("/files"), Command::Files);
     }
 

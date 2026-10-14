@@ -255,6 +255,15 @@ pub enum Overlay {
     },
     /// Quit confirmation (Ctrl+C).
     ConfirmQuit,
+    /// `/get`: where should this file land?
+    SaveAs {
+        /// The file to fetch.
+        card: FileCard,
+        /// Who shared it, for the prompt.
+        from: String,
+        /// The folder being typed, prefilled with the default.
+        path: String,
+    },
 }
 
 /// A side effect the main loop must perform for the reducer.
@@ -287,6 +296,8 @@ pub enum Effect {
         id: u64,
         /// What to fetch.
         card: FileCard,
+        /// The folder to save it in; created if missing.
+        dest: PathBuf,
     },
 }
 

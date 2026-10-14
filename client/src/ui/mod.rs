@@ -69,9 +69,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         2 => {
             widgets::rooms(frame, app, columns[0]);
-            widgets::messages(frame, app, columns[1]);
+            messages_with_strip(frame, app, columns[1]);
         }
-        _ => widgets::messages(frame, app, columns[0]),
+        _ => messages_with_strip(frame, app, columns[0]),
     }
 
     if dock_area.height > 0 {
@@ -90,6 +90,14 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     if app.overlay.is_some() {
         overlays::render(frame, app, area);
     }
+}
+
+/// The chat with a one-line presence strip on top — the member panel's
+/// stand-in when the terminal is too narrow to show it.
+fn messages_with_strip(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let [strip, chat] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    widgets::presence_strip(frame, app, strip);
+    widgets::messages(frame, app, chat);
 }
 
 /// Centres a `width`×`height` box inside `area`, clamped to fit.

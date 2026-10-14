@@ -41,6 +41,13 @@ enum Command {
         /// The account's username.
         username: String,
     },
+    /// Delete an account: logged out everywhere, history kept. Run it while
+    /// the server is stopped, or use /admin remove from an admin terminal to
+    /// also kick a live session.
+    Remove {
+        /// The account's username.
+        username: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,6 +72,7 @@ fn main() -> anyhow::Result<()> {
         .context("tokio runtime failed to start")?;
     match args.command {
         Some(Command::Promote { username }) => runtime.block_on(promote(config, &username)),
+        Some(Command::Remove { username }) => runtime.block_on(remove(config, &username)),
         None => runtime.block_on(serve(config)),
     }
 }
@@ -165,6 +173,22 @@ async fn serve(config: ServerConfig) -> anyhow::Result<()> {
 
     housekeeper.abort();
     tracing::info!("goodbye");
+    Ok(())
+}
+
+/// `teresad remove <user>`: delete an account from the server side.
+async fn remove(config: ServerConfig, username: &str) -> anyhow::Result<()> {
+    let store = SqliteStore::open(&config.database)
+        .await
+        .with_context(|| format!("opening database {}", config.database.display()))?;
+    let user = Core::new(store, config)
+        .remove_account(username, "the operator")
+        .await
+        .with_context(|| format!("removing {username}"))?;
+    println!(
+        "✦ @{} removed; their messages stay in history",
+        user.username
+    );
     Ok(())
 }
 

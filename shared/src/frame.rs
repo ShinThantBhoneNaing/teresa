@@ -156,6 +156,16 @@ pub enum ClientFrame {
         op: MaintenanceOp,
     },
 
+    /// Admin only: list every account. Answered with [`ServerFrame::Accounts`].
+    ListAccounts,
+
+    /// Admin only: delete an account. Their history stays; their access goes.
+    /// Answered with [`ServerFrame::AccountRemoved`].
+    RemoveAccount {
+        /// Handle of the account to delete.
+        username: String,
+    },
+
     /// Round-trip probe. The server answers with [`ServerFrame::Pong`].
     Ping {
         /// Echoed back verbatim; the client uses it to measure latency.
@@ -323,6 +333,25 @@ pub enum ServerFrame {
         report: MaintenanceReport,
     },
 
+    /// Every account on the node, in answer to [`ClientFrame::ListAccounts`].
+    Accounts {
+        /// All users, sorted by handle, with live presence.
+        users: Vec<User>,
+    },
+
+    /// An account was deleted, in answer to [`ClientFrame::RemoveAccount`].
+    AccountRemoved {
+        /// The handle that no longer exists.
+        username: String,
+    },
+
+    /// This connection's account was removed by an admin; the server closes
+    /// the socket right after, and the session is gone.
+    Kicked {
+        /// Why, for the screen.
+        reason: String,
+    },
+
     /// Answers [`ClientFrame::Ping`].
     Pong {
         /// The nonce from the ping.
@@ -461,6 +490,9 @@ impl ServerFrame {
             | Self::Notice { .. }
             | Self::Error { .. }
             | Self::Maintenance { .. }
+            | Self::Accounts { .. }
+            | Self::AccountRemoved { .. }
+            | Self::Kicked { .. }
             | Self::Pong { .. } => None,
         }
     }
@@ -589,6 +621,10 @@ mod tests {
             ClientFrame::Maintenance {
                 op: MaintenanceOp::Stats,
             },
+            ClientFrame::ListAccounts,
+            ClientFrame::RemoveAccount {
+                username: "mallory".into(),
+            },
             ClientFrame::Ping { nonce: 42 },
         ]
     }
@@ -681,6 +717,15 @@ mod tests {
                         db_bytes: 225_280,
                     },
                 },
+            },
+            ServerFrame::Accounts {
+                users: vec![sample_user()],
+            },
+            ServerFrame::AccountRemoved {
+                username: "mallory".into(),
+            },
+            ServerFrame::Kicked {
+                reason: "account removed by an admin".into(),
             },
             ServerFrame::Pong { nonce: 42 },
         ]

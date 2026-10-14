@@ -204,6 +204,11 @@ pub trait UserRepo {
     async fn touch_last_seen(&self, id: UserId, at: Timestamp) -> Result<()>;
     /// Total registered accounts.
     async fn count_users(&self) -> Result<u64>;
+    /// Every account, sorted by handle.
+    async fn all_users(&self) -> Result<Vec<UserRow>>;
+    /// Deletes an account; sessions, memberships and invites go with it by
+    /// cascade, authored messages and files stay. Returns whether it existed.
+    async fn delete_user(&self, id: UserId) -> Result<bool>;
 }
 
 /// Session persistence.

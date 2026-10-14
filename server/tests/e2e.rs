@@ -582,3 +582,36 @@ async fn message_flood_is_throttled_per_connection() {
         })
         .await;
 }
+
+#[tokio::test]
+async fn an_admin_removes_an_account_over_the_wire() {
+    let server = TestServer::spawn().await;
+    let admin_token = server.register("friday").await; // first account: admin
+    let bob_token = server.register("bob").await;
+    let (mut admin, _, _) = server.connect(&admin_token).await;
+    let (mut bob, _, _) = server.connect(&bob_token).await;
+
+    admin
+        .send(&ClientFrame::RemoveAccount {
+            username: "bob".into(),
+        })
+        .await;
+    admin
+        .frame_where(
+            "AccountRemoved",
+            |f| matches!(f, ServerFrame::AccountRemoved { username } if username == "bob"),
+        )
+        .await;
+    bob.frame_where("Kicked", |f| matches!(f, ServerFrame::Kicked { .. }))
+        .await;
+
+    admin.send(&ClientFrame::ListAccounts).await;
+    let ServerFrame::Accounts { users } = admin
+        .frame_where("Accounts", |f| matches!(f, ServerFrame::Accounts { .. }))
+        .await
+    else {
+        unreachable!()
+    };
+    let names: Vec<&str> = users.iter().map(|u| u.username.as_str()).collect();
+    assert_eq!(names, ["friday"], "bob is gone from the list");
+}

@@ -251,8 +251,21 @@ fn on_frame(app: &mut App, frame: ServerFrame) {
         ServerFrame::Presence { user, status, text } => {
             for state in app.rooms.values_mut() {
                 if let Some(member) = state.members.iter_mut().find(|m| m.id == user) {
+                    let line = status_line(member, status, text.as_deref());
+                    let author = teresa_proto::Author {
+                        id: member.id,
+                        username: member.username.clone(),
+                        display_name: member.display_name.clone(),
+                    };
                     member.status = status;
                     member.status_text.clone_from(&text);
+                    // Announced like an emote, in every room you share.
+                    if let Some(body) = line {
+                        let mut note = teresa_proto::Message::system(state.info.room.id, body);
+                        note.kind = MessageKind::Emote;
+                        note.author = Some(author);
+                        state.push_message(note);
+                    }
                 }
             }
             if let Some(me) = app.me.as_mut().filter(|me| me.id == user) {
@@ -311,6 +324,49 @@ fn on_frame(app: &mut App, frame: ServerFrame) {
         }
 
         ServerFrame::Maintenance { report } => on_maintenance(app, &report),
+
+        ServerFrame::Accounts { users } => {
+            app.local_note(format!("⛁ ACCOUNTS · {} on this node", users.len()));
+            for user in &users {
+                let joined = user.created_at.to_datetime();
+                app.local_note(format!(
+                    "  {} @{:<16} {:<20} {:<9} since {}-{:02}-{:02}",
+                    if user.status == teresa_proto::UserStatus::Offline {
+                        "○"
+                    } else {
+                        "●"
+                    },
+                    user.username,
+                    user.display_name,
+                    user.role.as_str(),
+                    joined.year(),
+                    u8::from(joined.month()),
+                    joined.day()
+                ));
+            }
+            app.local_note("  /admin remove @user --yes deletes one");
+        }
+
+        ServerFrame::AccountRemoved { username } => {
+            for room in app.rooms.values_mut() {
+                room.members.retain(|m| m.username != username);
+            }
+            app.local_note(format!("✔ @{username} deleted — refreshed list below"));
+            app.toast(
+                ToastKind::Success,
+                format!("✖ @{username} removed from the node"),
+            );
+            // Show the proof straight away, so an old list higher up in the
+            // scrollback is never mistaken for the current one.
+            app.send(ClientFrame::ListAccounts);
+        }
+
+        ServerFrame::Kicked { reason } => {
+            app.conn = ConnState::AuthFailed {
+                message: reason.clone(),
+            };
+            app.overlay = Some(Overlay::AuthFailed { message: reason });
+        }
 
         ServerFrame::Pong { nonce } => {
             if let Some(sent) = app.pending_pings.remove(&nonce) {
@@ -580,6 +636,24 @@ fn on_overlay_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
 
+        Overlay::SaveAs { path, .. } => match key.code {
+            KeyCode::Esc => {
+                app.overlay = None;
+                app.local_note("download cancelled");
+            }
+            KeyCode::Backspace => {
+                path.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => path.clear(),
+            KeyCode::Tab => *path = transfer::complete_dir(path),
+            KeyCode::Enter => save_as(app, false),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                save_as(app, true);
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => path.push(c),
+            _ => {}
+        },
+
         // The read-only overlays close on anything sensible.
         Overlay::Help | Overlay::Profile | Overlay::Notifications => {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q'))
@@ -624,6 +698,29 @@ pub fn switcher_entries(app: &App) -> Vec<SwitcherEntry> {
         }
     }
     entries
+}
+
+/// Accepts the save prompt: start the download into the typed folder, and
+/// with `remember`, make that folder the default too.
+fn save_as(app: &mut App, remember: bool) {
+    let Some(Overlay::SaveAs { path, .. }) = &app.overlay else {
+        return;
+    };
+    let dest = match transfer::destination_dir(path) {
+        Ok(dest) => dest,
+        Err(error) => {
+            // Keep the prompt open so the path can be fixed.
+            app.toast(ToastKind::Error, error);
+            return;
+        }
+    };
+    let Some(Overlay::SaveAs { card, .. }) = app.overlay.take() else {
+        return;
+    };
+    if remember {
+        set_download_default(app, dest.clone());
+    }
+    start_download(app, card, dest);
 }
 
 // --- input submission ------------------------------------------------------
@@ -868,7 +965,7 @@ fn execute(app: &mut App, command: Command) {
             }
         }
 
-        Command::Get(which) => {
+        Command::Get { which, to } => {
             let cards = app.file_cards();
             if cards.is_empty() {
                 app.toast(ToastKind::Error, "no files shared in this room yet");
@@ -887,11 +984,11 @@ fn execute(app: &mut App, command: Command) {
                     }
                 }
             };
-            let Some((_, card)) = picked else {
+            let Some((message, card)) = picked else {
                 app.toast(ToastKind::Error, "no such file — /files lists them");
                 return;
             };
-            let card = card.clone();
+            let (from, card) = (message.author_label().to_owned(), card.clone());
             if app
                 .transfer_for(card.id)
                 .is_some_and(super::Transfer::active)
@@ -902,30 +999,32 @@ fn execute(app: &mut App, command: Command) {
                 );
                 return;
             }
-            let id = app.next_transfer;
-            app.next_transfer += 1;
-            let place = app
-                .active_room()
-                .map(super::RoomState::label)
-                .unwrap_or_default();
-            let now = Instant::now();
-            app.transfers.push(super::Transfer {
-                id,
-                upload: false,
-                name: card.landing_name().to_owned(),
-                place,
-                file: Some(card.id),
-                stage: Stage::Receiving {
-                    done: 0,
-                    total: card.size,
+            match to {
+                Some(dir) => match transfer::destination_dir(&dir) {
+                    Ok(dest) => start_download(app, card, dest),
+                    Err(error) => app.toast(ToastKind::Error, error),
                 },
-                started: now,
-                stage_started: now,
-                ended: None,
-                wire: None,
-            });
-            app.effects.push(Effect::Download { id, card });
+                None => {
+                    app.overlay = Some(Overlay::SaveAs {
+                        card,
+                        from,
+                        path: transfer::tilde(&app.config.downloads_dir()),
+                    });
+                }
+            }
         }
+
+        Command::Downloads(None) => {
+            let current = transfer::tilde(&app.config.downloads_dir());
+            app.local_note(format!(
+                "downloads land in {current} — /downloads <folder> to change it"
+            ));
+        }
+
+        Command::Downloads(Some(dir)) => match transfer::destination_dir(&dir) {
+            Ok(dest) => set_download_default(app, dest),
+            Err(error) => app.toast(ToastKind::Error, error),
+        },
 
         Command::Files => {
             let lines: Vec<String> = app
@@ -986,6 +1085,28 @@ fn execute(app: &mut App, command: Command) {
             }
         }
 
+        Command::AdminUsers => app.send(ClientFrame::ListAccounts),
+
+        Command::AdminRemove {
+            username,
+            confirmed,
+        } => {
+            if confirmed {
+                app.local_note(format!("⛁ removing @{username}…"));
+                app.send(ClientFrame::RemoveAccount { username });
+            } else {
+                app.local_note(format!(
+                    "⚠ NOT deleted yet. This would delete @{username}: logged out everywhere, \
+                     can no longer sign in; their messages stay in history"
+                ));
+                app.local_note(format!("to confirm, type: /admin remove @{username} --yes"));
+                app.toast(
+                    ToastKind::Mention,
+                    format!("@{username} not deleted — add --yes to confirm"),
+                );
+            }
+        }
+
         Command::Clear => clear_active_room(app),
 
         Command::Ping => {
@@ -1020,6 +1141,50 @@ fn execute(app: &mut App, command: Command) {
 }
 
 // --- shared behaviours -----------------------------------------------------
+
+/// Registers a download in the dock and asks the main loop to run it.
+fn start_download(app: &mut App, card: teresa_proto::FileCard, dest: std::path::PathBuf) {
+    let id = app.next_transfer;
+    app.next_transfer += 1;
+    let place = app
+        .active_room()
+        .map(super::RoomState::label)
+        .unwrap_or_default();
+    let now = Instant::now();
+    app.transfers.push(super::Transfer {
+        id,
+        upload: false,
+        name: card.landing_name().to_owned(),
+        place,
+        file: Some(card.id),
+        stage: Stage::Receiving {
+            done: 0,
+            total: card.size,
+        },
+        started: now,
+        stage_started: now,
+        ended: None,
+        wire: None,
+    });
+    app.local_note(format!(
+        "▼ pulling {} into {}",
+        card.landing_name(),
+        transfer::tilde(&dest)
+    ));
+    app.effects.push(Effect::Download { id, card, dest });
+    app.dirty = true;
+}
+
+/// Makes `dest` the folder downloads default to, and persists it.
+fn set_download_default(app: &mut App, dest: std::path::PathBuf) {
+    let shown = transfer::tilde(&dest);
+    app.config.downloads = Some(dest);
+    app.effects.push(Effect::PersistConfig);
+    app.toast(
+        ToastKind::Success,
+        format!("downloads now default to {shown}"),
+    );
+}
 
 /// Registers an upload in the dock and asks the main loop to run it.
 fn start_upload(app: &mut App, room: RoomId, path: std::path::PathBuf, zip: bool) {
@@ -1125,6 +1290,43 @@ fn on_transfer(app: &mut App, update: TransferUpdate) {
         }
         app.toast(kind, text);
     }
+}
+
+/// The emote-style line announcing a status change, or `None` when it is
+/// not news: logging in and out is already visible in the member list, and
+/// announcing every reconnect would bury the conversation.
+fn status_line(
+    before: &teresa_proto::User,
+    status: teresa_proto::UserStatus,
+    text: Option<&str>,
+) -> Option<String> {
+    use teresa_proto::UserStatus as S;
+    let was = before.status;
+    let text_changed = before.status_text.as_deref() != text;
+    let news = match status {
+        S::Offline => false,
+        S::Online => matches!(was, S::Busy | S::Coding | S::Reviewing | S::Away) || text_changed,
+        S::Busy | S::Coding | S::Reviewing | S::Away => was != status || text_changed,
+    };
+    // Coming back from offline is a login, whatever status it restores.
+    if !news || was == S::Offline {
+        return None;
+    }
+    let (emoji, phrase) = match status {
+        S::Online if matches!(was, S::Busy | S::Coding | S::Reviewing | S::Away) => {
+            ("✅", "is back online")
+        }
+        S::Online => ("✅", "is online"),
+        S::Busy => ("⛔", "is now busy"),
+        S::Coding => ("💻", "is now coding"),
+        S::Reviewing => ("👀", "is now reviewing"),
+        S::Away => ("🌙", "is now away"),
+        S::Offline => unreachable!("offline is never news"),
+    };
+    Some(match text {
+        Some(text) => format!("{emoji} {phrase} — {text}"),
+        None => format!("{emoji} {phrase}"),
+    })
 }
 
 /// "older than 30 days" / "regardless of age".
@@ -2053,17 +2255,30 @@ mod tests {
         }
         app.effects.clear();
 
+        let dest = app.config.downloads_dir();
         submit_line(&mut app, "/get");
+        assert!(
+            matches!(&app.overlay, Some(Overlay::SaveAs { card, .. }) if *card == new),
+            "/get asks where to save"
+        );
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+        assert_eq!(app.overlay, None);
         assert_eq!(
             app.effects.pop(),
-            Some(Effect::Download { id: 1, card: new })
+            Some(Effect::Download {
+                id: 1,
+                card: new,
+                dest: dest.clone()
+            })
         );
         submit_line(&mut app, "/get 2");
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
         assert_eq!(
             app.effects.pop(),
             Some(Effect::Download {
                 id: 2,
-                card: old.clone()
+                card: old.clone(),
+                dest
             })
         );
 
@@ -2081,6 +2296,8 @@ mod tests {
         );
         assert!(app.transfers.iter().all(|t| t.id != 2 || t.ended.is_some()));
         submit_line(&mut app, "/get old");
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Enter)));
         assert!(matches!(app.effects.pop(), Some(Effect::Download { .. })));
     }
 
@@ -2136,5 +2353,157 @@ mod tests {
         assert!(notes
             .iter()
             .any(|n| n.contains("removed 12 message(s), freed 8.0 KiB")));
+    }
+
+    #[test]
+    fn removing_an_account_needs_yes_and_a_kick_is_terminal() {
+        let (mut app, _, _) = ready_app();
+        submit_line(&mut app, "/admin remove @bob");
+        assert!(app.effects.is_empty());
+        assert!(
+            app.toasts.iter().any(|t| t.text.contains("not deleted")),
+            "an unconfirmed remove must say so loudly"
+        );
+        submit_line(&mut app, "/admin remove @bob --yes");
+        assert_eq!(
+            app.effects,
+            vec![Effect::Send(ClientFrame::RemoveAccount {
+                username: "bob".into()
+            })]
+        );
+
+        app.effects.clear();
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::AccountRemoved {
+                username: "bob".into(),
+            })),
+        );
+        assert_eq!(
+            app.effects,
+            vec![Effect::Send(ClientFrame::ListAccounts)],
+            "the list refreshes itself after a removal"
+        );
+
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Kicked {
+                reason: "your account @neo was removed by @friday".into(),
+            })),
+        );
+        assert!(matches!(app.conn, ConnState::AuthFailed { .. }));
+        assert!(matches!(app.overlay, Some(Overlay::AuthFailed { .. })));
+    }
+
+    #[test]
+    fn status_changes_are_announced_like_emotes_but_logins_are_not() {
+        let (mut app, _, general) = ready_app();
+        let alice = user("alice");
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Members {
+                room: general.id,
+                members: vec![alice.clone()],
+            })),
+        );
+        let presence = |status, text: Option<&str>| {
+            Event::Net(NetEvent::Frame(ServerFrame::Presence {
+                user: alice.id,
+                status,
+                text: text.map(str::to_owned),
+            }))
+        };
+        let lines = |app: &App| -> Vec<String> {
+            app.rooms[&general.id]
+                .messages
+                .iter()
+                .filter(|m| m.kind == MessageKind::Emote)
+                .map(|m| m.body.clone())
+                .collect()
+        };
+
+        update(
+            &mut app,
+            presence(UserStatus::Coding, Some("fixing login bug")),
+        );
+        update(&mut app, presence(UserStatus::Offline, None));
+        update(&mut app, presence(UserStatus::Online, None));
+        update(&mut app, presence(UserStatus::Away, None));
+        update(&mut app, presence(UserStatus::Online, None));
+
+        assert_eq!(
+            lines(&app),
+            [
+                "💻 is now coding — fixing login bug",
+                "🌙 is now away",
+                "✅ is back online"
+            ]
+        );
+        let member = &app.rooms[&general.id].members[0];
+        assert_eq!(member.status, UserStatus::Online);
+    }
+
+    #[test]
+    fn the_save_prompt_takes_a_typed_folder_and_can_make_it_the_default() {
+        let (mut app, me, general) = ready_app();
+        let scratch = tempfile::tempdir().unwrap();
+        let card = teresa_proto::FileCard {
+            id: teresa_proto::FileId::new(),
+            name: "logo.png".into(),
+            size: 42,
+            sha256: "ab".repeat(32),
+            kind: teresa_proto::FileKind::File,
+            entries: None,
+        };
+        let mut message = chat(general.id, &me, &card.to_body());
+        message.kind = MessageKind::File;
+        update(
+            &mut app,
+            Event::Net(NetEvent::Frame(ServerFrame::Message { message })),
+        );
+        app.effects.clear();
+
+        // Esc cancels without a transfer.
+        submit_line(&mut app, "/get");
+        update(&mut app, Event::Key(KeyEvent::from(KeyCode::Esc)));
+        assert!(app.overlay.is_none() && app.effects.is_empty());
+
+        // Type a new folder over the default; Ctrl+D saves and remembers it.
+        submit_line(&mut app, "/get");
+        update(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+        );
+        let inbox = scratch.path().join("inbox");
+        for c in inbox.display().to_string().chars() {
+            update(&mut app, Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        }
+        update(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.effects.contains(&Effect::PersistConfig));
+        assert!(app.effects.contains(&Effect::Download {
+            id: 1,
+            card: card.clone(),
+            dest: inbox.clone()
+        }));
+        assert_eq!(app.config.downloads_dir(), inbox);
+
+        // A file is not a folder: refused, with the reason.
+        update(
+            &mut app,
+            Event::Transfer(TransferUpdate {
+                id: 1,
+                stage: Stage::Done(Outcome::Saved(inbox.join("logo.png"))),
+            }),
+        );
+        app.toasts.clear();
+        let file = scratch.path().join("note.txt");
+        std::fs::write(&file, "x").unwrap();
+        app.effects.clear();
+        submit_line(&mut app, &format!("/get --to {}", file.display()));
+        assert!(app.effects.is_empty());
+        assert!(app.toasts.iter().any(|t| t.kind == ToastKind::Error));
     }
 }

@@ -139,14 +139,14 @@ async fn a_file_crosses_from_one_account_to_another_intact() {
     assert_eq!(card.size, bytes.len() as u64);
 
     let (tx, mut rx) = mpsc::channel(256);
-    bob.spawn_download(2, card.clone(), tx);
+    bob.spawn_download(2, card.clone(), rig.config.downloads_dir(), tx);
     let path = saved(finish(&mut rx).await.0);
     assert_eq!(path.file_name().unwrap(), "dump.sql");
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
     // A second pull never clobbers the first.
     let (tx, mut rx) = mpsc::channel(256);
-    bob.spawn_download(3, card, tx);
+    bob.spawn_download(3, card, rig.config.downloads_dir(), tx);
     let again = saved(finish(&mut rx).await.0);
     assert_eq!(again.file_name().unwrap(), "dump (1).sql");
 }
@@ -176,7 +176,7 @@ async fn a_folder_travels_zipped_and_lands_unpacked() {
     );
 
     let (tx, mut rx) = mpsc::channel(256);
-    bob.spawn_download(2, card, tx);
+    bob.spawn_download(2, card, rig.config.downloads_dir(), tx);
     let landed = saved(finish(&mut rx).await.0);
     assert_eq!(landed.file_name().unwrap(), "st's project");
     assert_same_file(&landed.join("src/main.rs"), &project.join("src/main.rs"));
