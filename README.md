@@ -83,7 +83,29 @@ terminals in *Who Am I* and every hacker movie that got it right.
 
 ## Install — Linux · macOS · Windows
 
-Everything is built from source with Rust; the result is two dependency-free
+### Quick install from the friday node (no Rust needed)
+
+On the office LAN, one command installs a prebuilt `teresa`:
+
+```sh
+curl -fsSL http://friday-server.local:7737/install.sh | sh     # Linux, macOS
+```
+
+```powershell
+irm http://friday-server.local:7737/install.ps1 | iex          # Windows PowerShell
+```
+
+It replaces an existing `teresa` (e.g. an old `cargo install`) in place, or
+installs to `~/.local/bin` (Windows: `%LOCALAPPDATA%\teresa\bin`).
+
+**Getting new features:** just start `teresa`. When friday has a newer
+build it asks `update now? [Y/n]`, swaps itself and restarts. Or run
+`teresa update` any time. No `git pull`, no `cargo`.
+
+### Building from source
+
+Only needed to work on TERESA itself, or for a platform friday does not
+build for. Everything is built with Rust; the result is two dependency-free
 binaries. The steps below end with `teresa` callable from any terminal.
 
 ### 1. Install Rust (once, any OS)
@@ -158,7 +180,12 @@ Teammates on Tailscale use the `.ts.net` name.
 syncs the source to friday, builds release binaries there, installs them to
 `~/.local/bin`, writes `~/.config/teresa/server.toml` on first run (bind
 `0.0.0.0`, data in `~/.local/share/teresa/`, `#sevendev` as the landing
-channel) and restarts the `teresad` systemd user service.
+channel) and restarts the `teresad` systemd user service. It also publishes
+client builds to `~/.local/share/teresa/releases/` for `teresa update` and
+the installers: Linux built on friday, macOS (Apple silicon + Intel) built
+on the deploying Mac, and Windows when that Mac has
+`brew install zig && cargo install cargo-zigbuild`. Every deploy is a new
+build stamp, so every teammate is offered it on their next launch.
 
 ```sh
 scripts/deploy-friday.sh           # deploy / update

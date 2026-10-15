@@ -209,3 +209,101 @@ fn assert_same_file(a: &Path, b: &Path) {
         b.display()
     );
 }
+
+/// Waits for the transfer's final stage, cancelling it as soon as it is
+/// moving bytes.
+async fn cancel_midway(
+    client: &TransferClient,
+    id: u64,
+    rx: &mut mpsc::Receiver<TransferUpdate>,
+) -> Stage {
+    let mut asked = false;
+    loop {
+        let update = tokio::time::timeout(STEP, rx.recv())
+            .await
+            .expect("transfer ends in time")
+            .expect("task alive");
+        match update.stage {
+            Stage::Sending { .. } | Stage::Receiving { .. } | Stage::Packing { .. } if !asked => {
+                client.cancel(id);
+                asked = true;
+            }
+            stage @ (Stage::Done(_) | Stage::Failed(_) | Stage::Cancelled) => return stage,
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_upload_publishes_nothing_and_leaves_no_bytes() {
+    let rig = rig().await;
+    let alice = client(&rig.config, "alice").await;
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("huge.bin");
+    std::fs::write(&source, noise(64 * 1024 * 1024)).unwrap();
+
+    let (tx, mut rx) = mpsc::channel(256);
+    alice.spawn_upload(1, rig.general, source, false, tx);
+    assert_eq!(cancel_midway(&alice, 1, &mut rx).await, Stage::Cancelled);
+
+    // The server notices the dropped connection and discards the partial.
+    let files = rig._scratch.path().join("files");
+    let mut left = usize::MAX;
+    for _ in 0..50 {
+        left = std::fs::read_dir(&files).map_or(0, Iterator::count);
+        if left == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(left, 0, "no stored or partial bytes on the server");
+}
+
+#[tokio::test]
+async fn a_cancelled_download_leaves_nothing_behind() {
+    let rig = rig().await;
+    let alice = client(&rig.config, "alice").await;
+    let bob = client(&rig.config, "bob").await;
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = source_dir.path().join("huge.bin");
+    std::fs::write(&source, noise(64 * 1024 * 1024)).unwrap();
+
+    let (tx, mut rx) = mpsc::channel(256);
+    alice.spawn_upload(1, rig.general, source, false, tx);
+    let card = shared(finish(&mut rx).await.0);
+
+    let inbox = rig._scratch.path().join("inbox");
+    let (tx, mut rx) = mpsc::channel(256);
+    bob.spawn_download(2, card, inbox.clone(), tx);
+    assert_eq!(cancel_midway(&bob, 2, &mut rx).await, Stage::Cancelled);
+    assert_eq!(
+        std::fs::read_dir(&inbox).map_or(0, Iterator::count),
+        0,
+        "the partial download is removed"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_folder_send_removes_its_zip() {
+    let rig = rig().await;
+    let alice = client(&rig.config, "alice").await;
+    let source_dir = tempfile::tempdir().unwrap();
+    let folder = source_dir.path().join("dataset");
+    std::fs::create_dir(&folder).unwrap();
+    for i in 0..4 {
+        std::fs::write(folder.join(format!("part{i}.bin")), noise(16 * 1024 * 1024)).unwrap();
+    }
+
+    let (tx, mut rx) = mpsc::channel(256);
+    alice.spawn_upload(77, rig.general, folder, false, tx);
+    assert_eq!(cancel_midway(&alice, 77, &mut rx).await, Stage::Cancelled);
+
+    let zip = std::env::temp_dir().join(format!("teresa-{}-77.zip", std::process::id()));
+    for _ in 0..50 {
+        if !zip.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!zip.exists(), "the packed archive is cleaned up");
+}

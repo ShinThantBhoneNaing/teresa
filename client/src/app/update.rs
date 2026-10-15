@@ -7,7 +7,9 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use teresa_proto::file::human_bytes;
 use teresa_proto::{
     ClientFrame, FileCard, MaintenanceOp, MaintenanceReport, MessageKind, RoomId, RoomKind,
@@ -533,6 +535,7 @@ fn on_key(app: &mut App, key: KeyEvent) {
             }
         }
         (KeyCode::Char('k'), true, _) => clear_active_room(app),
+        (KeyCode::Char('x'), true, _) => cancel_transfers(app, false),
         (KeyCode::Char('l'), true, _) => app.dirty = true, // full redraw happens anyway
         (KeyCode::Char('r'), true, _) => {
             app.effects.push(Effect::ReconnectNow);
@@ -1126,6 +1129,7 @@ fn execute(app: &mut App, command: Command) {
             }
         }
 
+        Command::Cancel { all } => cancel_transfers(app, all),
         Command::Clear => clear_active_room(app),
 
         Command::Ping => {
@@ -1294,6 +1298,7 @@ fn on_transfer(app: &mut App, update: TransferUpdate) {
         Stage::Failed(reason) => {
             Some((ToastKind::Error, format!("✖ {} — {reason}", transfer.name)))
         }
+        Stage::Cancelled => Some((ToastKind::Info, format!("⊘ {} cancelled", transfer.name))),
         _ => None,
     };
     if let Some((kind, text)) = ending {
@@ -1543,9 +1548,59 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => scroll_up(app, 3),
         MouseEventKind::ScrollDown => scroll_down(app, 3),
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(id) = cancel_button_at(app, mouse.column, mouse.row) {
+                request_cancel(app, id);
+            }
+        }
         _ => return,
     }
     app.dirty = true;
+}
+
+/// The running transfer whose dock cancel button covers this cell, if any.
+fn cancel_button_at(app: &App, column: u16, row: u16) -> Option<u64> {
+    let area = app.dock_area.get();
+    let button = unicode_width::UnicodeWidthStr::width(crate::ui::transfers::CANCEL_BUTTON) as u16;
+    let on_button = row >= area.y
+        && row < area.y + area.height
+        && column >= (area.x + area.width).saturating_sub(button)
+        && column < area.x + area.width;
+    if !on_button {
+        return None;
+    }
+    crate::ui::transfers::dock_visible(app)
+        .get(usize::from(row - area.y))
+        .filter(|t| t.active())
+        .map(|t| t.id)
+}
+
+/// `/cancel`, Ctrl+X: stop the newest running transfer, or all of them.
+fn cancel_transfers(app: &mut App, all: bool) {
+    let running: Vec<u64> = app
+        .transfers
+        .iter()
+        .rev()
+        .filter(|t| t.active())
+        .map(|t| t.id)
+        .collect();
+    if running.is_empty() {
+        app.toast(ToastKind::Info, "no transfer running");
+        return;
+    }
+    let take = if all { running.len() } else { 1 };
+    for id in running.into_iter().take(take) {
+        request_cancel(app, id);
+    }
+}
+
+/// Asks the main loop to stop one transfer; the task reports `Cancelled`.
+fn request_cancel(app: &mut App, id: u64) {
+    if let Some(t) = app.transfers.iter().find(|t| t.id == id && t.active()) {
+        app.local_note(format!("⊘ cancelling {}…", t.name));
+        app.effects.push(Effect::CancelTransfer { id });
+        app.dirty = true;
+    }
 }
 
 fn on_tick(app: &mut App) {
@@ -1573,7 +1628,7 @@ fn on_tick(app: &mut App) {
     // Finished transfers bow out of the dock; abandoned DM sends give up.
     let before = app.transfers.len();
     app.transfers.retain(|t| {
-        let linger = if matches!(t.stage, Stage::Failed(_)) {
+        let linger = if matches!(t.stage, Stage::Failed(_) | Stage::Cancelled) {
             TRANSFER_FAIL_LINGER
         } else {
             TRANSFER_LINGER
@@ -2179,6 +2234,57 @@ mod tests {
 
     fn submit_line(app: &mut App, line: &str) {
         execute(app, parse(line));
+    }
+
+    #[test]
+    fn cancel_stops_the_newest_running_transfer_and_the_dock_button_hits_it() {
+        let (mut app, _, _) = ready_app();
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("big.iso");
+        std::fs::write(&file, "x").unwrap();
+
+        // Nothing running: a toast, no effect.
+        update(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.effects.is_empty());
+
+        submit_line(&mut app, &format!("/send {}", file.display()));
+        submit_line(&mut app, &format!("/send {}", file.display()));
+        app.effects.clear();
+
+        submit_line(&mut app, "/cancel");
+        assert_eq!(app.effects, vec![Effect::CancelTransfer { id: 2 }]);
+        app.effects.clear();
+
+        // The dock as last drawn: two rows at the bottom of an 80-wide screen.
+        app.dock_area.set(ratatui::layout::Rect::new(0, 20, 80, 2));
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        update(&mut app, click(10, 20)); // on the row, not the button
+        assert!(app.effects.is_empty());
+        update(&mut app, click(79, 20)); // the button of the first row
+        assert_eq!(app.effects, vec![Effect::CancelTransfer { id: 1 }]);
+
+        // The task's final word ends the row.
+        update(
+            &mut app,
+            Event::Transfer(TransferUpdate {
+                id: 1,
+                stage: Stage::Cancelled,
+            }),
+        );
+        assert!(!app.transfers[0].active());
+        app.effects.clear();
+        update(&mut app, click(79, 20));
+        assert!(app.effects.is_empty(), "a finished row has no button");
     }
 
     #[test]

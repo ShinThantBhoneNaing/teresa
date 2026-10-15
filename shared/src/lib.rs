@@ -14,6 +14,7 @@
 //! - [`message`] — chat lines
 //! - [`file`] — shared files, folders and archives
 //! - [`admin`] — storage maintenance for admins
+//! - [`release`] — client builds the node hands out for self-update
 //! - [`frame`] — the protocol proper
 //! - [`validate`] — input rules both sides enforce
 //! - [`error`] — shared failure vocabulary
@@ -46,6 +47,7 @@ pub mod file;
 pub mod frame;
 pub mod ids;
 pub mod message;
+pub mod release;
 pub mod room;
 pub mod stamp;
 pub mod user;
@@ -60,6 +62,7 @@ pub use frame::{
 };
 pub use ids::{ConnectionId, FileId, MessageId, RoomId, UserId};
 pub use message::{Message, MessageKind};
+pub use release::{platform_key, ClientRelease, ReleaseAsset};
 pub use room::{dm_participants, dm_room_name, MemberRole, Room, RoomKind, Visibility};
 pub use stamp::Timestamp;
 pub use user::{Author, User, UserRole, UserStatus};

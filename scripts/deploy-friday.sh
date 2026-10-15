@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy (or update) the team node on friday-server.
 #
-#   scripts/deploy-friday.sh          sync source, build release, install, restart
+#   scripts/deploy-friday.sh          sync source, build release, install, restart,
+#                                     and publish client builds for `teresa update`
 #   scripts/deploy-friday.sh status   service status + last log lines
 #   scripts/deploy-friday.sh logs     follow the server log
 #   scripts/deploy-friday.sh clean    free friday's disk: build output and
@@ -18,12 +19,27 @@
 #   ~/.local/bin/{teresad,teresa}     release binaries
 #   ~/.config/teresa/server.toml      server config (written once, then yours)
 #   ~/.local/share/teresa/            database + shared files
+#   ~/.local/share/teresa/releases/   client builds teammates update from
 #   ~/.config/systemd/user/teresad.service
+#
+# Client builds: Linux is built on friday; macOS (Apple silicon + Intel) on
+# this Mac; Windows too when `cargo zigbuild` is installed here
+# (brew install zig && cargo install cargo-zigbuild). Teammates then run
+# `teresa update` — or get offered the update when teresa starts — with no
+# Rust toolchain of their own. New machines install with
+#   curl -fsSL http://friday-server.local:7737/install.sh | sh     (Linux, macOS)
+#   irm http://friday-server.local:7737/install.ps1 | iex          (Windows)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export PATH="$HOME/.cargo/bin:$PATH"
 
 HOST="${TERESA_HOST:-friday-server}"
 PORT="${TERESA_PORT:-7737}"
+# Apple targets to build on a Mac; set empty to skip.
+MAC_TARGETS="${TERESA_MAC_TARGETS-aarch64-apple-darwin x86_64-apple-darwin}"
+# Every deploy stamps a fresh build; clients treat any other stamp as an update.
+BUILD="$(date +%Y-%m-%d.%H%M).$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+git diff --quiet HEAD 2>/dev/null || BUILD="$BUILD-dirty"
 
 remote() { ssh -o ConnectTimeout=8 "$HOST" "$@"; }
 
@@ -60,6 +76,29 @@ remote true || {
     exit 1
 }
 
+STAGE=target/releases
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+if [ "$(uname -s)" = Darwin ] && [ -n "$MAC_TARGETS" ]; then
+    for target in $MAC_TARGETS; do
+        echo "✦ building client for $target here"
+        rustup target list --installed | grep -qx "$target" || rustup target add "$target"
+        TERESA_BUILD="$BUILD" cargo build --release --locked -p teresa-client --target "$target" 2>&1 | tail -1
+        case "$target" in
+        aarch64-*) cp "target/$target/release/teresa" "$STAGE/teresa-macos-aarch64" ;;
+        x86_64-*) cp "target/$target/release/teresa" "$STAGE/teresa-macos-x86_64" ;;
+        esac
+    done
+fi
+if cargo zigbuild --version >/dev/null 2>&1; then
+    echo "✦ building client for Windows here"
+    rustup target list --installed | grep -qx x86_64-pc-windows-gnu || rustup target add x86_64-pc-windows-gnu
+    TERESA_BUILD="$BUILD" cargo zigbuild --release --locked -p teresa-client --target x86_64-pc-windows-gnu 2>&1 | tail -1
+    cp target/x86_64-pc-windows-gnu/release/teresa.exe "$STAGE/teresa-windows-x86_64.exe"
+else
+    echo "  (no Windows client build: brew install zig && cargo install cargo-zigbuild)"
+fi
+
 echo "✦ syncing source"
 rsync -az --delete \
     --exclude target --exclude .git --exclude '*.db' --exclude '*.db-*' \
@@ -73,9 +112,19 @@ remote 'set -e
         export PATH="$HOME/.cargo/bin:$PATH"
     }
     cd ~/teresa-src
-    cargo build --release --locked -p teresa-server -p teresa-client 2>&1 | tail -3
+    TERESA_BUILD='"'$BUILD'"' cargo build --release --locked -p teresa-server -p teresa-client 2>&1 | tail -3
     mkdir -p ~/.local/bin
     install -m 755 target/release/teresad target/release/teresa ~/.local/bin/'
+
+echo "✦ publishing client build $BUILD"
+# --delete: a platform not rebuilt this time must not be offered under the
+# new build stamp with an old binary.
+remote 'mkdir -p ~/.local/share/teresa/releases'
+rsync -az --delete "$STAGE/" "$HOST:.local/share/teresa/releases/"
+remote "set -e
+    releases=~/.local/share/teresa/releases
+    install -m 755 ~/teresa-src/target/release/teresa \"\$releases/teresa-linux-\$(uname -m)\"
+    sh ~/teresa-src/scripts/publish-client.sh '$BUILD' \"\$releases\""
 
 echo "✦ configuring"
 remote "set -e

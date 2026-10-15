@@ -29,6 +29,8 @@ const CARD_MAX: usize = 62;
 const CARD_MIN: usize = 26;
 /// Most transfers the dock shows at once.
 pub const DOCK_ROWS: usize = 4;
+/// The clickable stop button at the right end of a running transfer's row.
+pub const CANCEL_BUTTON: &str = " ✖ cancel ";
 
 // --- the card ----------------------------------------------------------------
 
@@ -162,6 +164,10 @@ fn card_status(app: &App, card: &FileCard, index: usize, inner: usize) -> Vec<Sp
             format!("  ✖ failed — /get {index} to retry"),
             Style::default().fg(theme.danger),
         )],
+        Stage::Cancelled => vec![Span::styled(
+            format!("  ⊘ cancelled — /get {index} to pull it again"),
+            Style::default().fg(theme.muted),
+        )],
         Stage::Packing { .. } | Stage::Sending { .. } => Vec::new(),
     }
 }
@@ -200,16 +206,34 @@ pub fn dock_height(app: &App) -> u16 {
     app.transfers.len().min(DOCK_ROWS) as u16
 }
 
+/// The transfers the dock shows, top row first.
+pub fn dock_visible(app: &App) -> &[Transfer] {
+    &app.transfers[app.transfers.len().saturating_sub(DOCK_ROWS)..]
+}
+
 /// One row per transfer, newest at the bottom, just above the status bar.
+/// Running ones end in a [`CANCEL_BUTTON`] the mouse can hit.
 pub fn dock(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let theme = &app.theme;
     let width = usize::from(area.width);
-    let skip = app.transfers.len().saturating_sub(DOCK_ROWS);
-    let lines: Vec<Line<'static>> = app
-        .transfers
+    let button = CANCEL_BUTTON.width();
+    app.dock_area.set(area);
+    let lines: Vec<Line<'static>> = dock_visible(app)
         .iter()
-        .skip(skip)
-        .map(|t| dock_row(theme, t, width))
+        .map(|t| {
+            if !t.active() || width < button + 30 {
+                return dock_row(theme, t, width);
+            }
+            let mut line = dock_row(theme, t, width - button);
+            let used = line.width();
+            line.spans
+                .push(Span::raw(" ".repeat((width - button).saturating_sub(used))));
+            line.spans.push(Span::styled(
+                CANCEL_BUTTON,
+                Style::default().fg(theme.bg).bg(theme.danger).bold(),
+            ));
+            line
+        })
         .collect();
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme.surface)),
@@ -217,6 +241,7 @@ pub fn dock(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+#[allow(clippy::too_many_lines)] // one arm per stage; splitting it scatters the row's layout
 fn dock_row(theme: &Theme, t: &Transfer, width: usize) -> Line<'static> {
     let arrow = if t.upload { "▲" } else { "▼" };
     let (tag, color) = match &t.stage {
@@ -227,6 +252,7 @@ fn dock_row(theme: &Theme, t: &Transfer, width: usize) -> Line<'static> {
         Stage::Unpacking => ("UNZIP", theme.tertiary),
         Stage::Done(_) => ("OK", theme.success),
         Stage::Failed(_) => ("FAIL", theme.danger),
+        Stage::Cancelled => ("STOP", theme.muted),
     };
     let route = if t.upload {
         format!(" → {}", t.place)
@@ -315,6 +341,16 @@ fn dock_row(theme: &Theme, t: &Transfer, width: usize) -> Line<'static> {
             spans.push(Span::styled(
                 fit(reason, room),
                 Style::default().fg(theme.danger),
+            ));
+        }
+        Stage::Cancelled => {
+            spans.push(Span::styled(
+                if t.upload {
+                    "cancelled — nothing was shared"
+                } else {
+                    "cancelled — partial download removed"
+                },
+                Style::default().fg(theme.muted),
             ));
         }
     }

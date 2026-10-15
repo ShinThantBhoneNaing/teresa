@@ -97,6 +97,11 @@ pub enum Command {
         /// `--yes` given.
         confirmed: bool,
     },
+    /// `/cancel [all]` — stop the newest running transfer, or every one.
+    Cancel {
+        /// Every running transfer, not just the newest.
+        all: bool,
+    },
     /// `/clear` — clear the current room's scrollback (locally).
     Clear,
     /// `/ping` — measure round-trip time.
@@ -152,6 +157,9 @@ pub fn parse(input: &str) -> Command {
         "downloads" | "savedir" => Command::Downloads((!args.is_empty()).then(|| args.to_owned())),
         "files" | "ls" => Command::Files,
         "admin" => parse_admin(args),
+        "cancel" | "stop" | "abort" | "reject" => Command::Cancel {
+            all: args.trim().eq_ignore_ascii_case("all"),
+        },
         "clear" | "cls" => Command::Clear,
         "ping" => Command::Ping,
         "version" | "ver" => Command::Version,
@@ -309,6 +317,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "downloads",
     "files",
     "admin",
+    "cancel",
     "clear",
     "ping",
     "version",

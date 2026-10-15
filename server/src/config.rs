@@ -27,6 +27,9 @@ pub struct ServerConfig {
     pub database: PathBuf,
     /// Where shared files are kept. Defaults to `files/` beside the database.
     pub files_dir: Option<PathBuf>,
+    /// Where prebuilt client binaries and their `manifest.json` are kept for
+    /// `teresa update`. Defaults to `releases/` beside the database.
+    pub releases_dir: Option<PathBuf>,
     /// TLS settings.
     pub tls: TlsConfig,
     /// Rate-limit settings.
@@ -53,6 +56,7 @@ impl Default for ServerConfig {
             motd: None,
             database: PathBuf::from("teresa.db"),
             files_dir: None,
+            releases_dir: None,
             tls: TlsConfig::default(),
             limits: LimitsConfig::default(),
             sessions: SessionConfig::default(),
@@ -150,6 +154,17 @@ impl ServerConfig {
         })
     }
 
+    /// The directory client builds are served from.
+    #[must_use]
+    pub fn releases_path(&self) -> PathBuf {
+        self.releases_dir.clone().unwrap_or_else(|| {
+            self.database
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(|| PathBuf::from("releases"), |p| p.join("releases"))
+        })
+    }
+
     /// Largest accepted upload, in bytes.
     #[must_use]
     pub const fn upload_max_bytes(&self) -> u64 {
@@ -213,6 +228,9 @@ impl ServerConfig {
         }
         if let Some(files) = parse::<PathBuf>("TERESA_FILES_DIR")? {
             self.files_dir = Some(files);
+        }
+        if let Some(releases) = parse::<PathBuf>("TERESA_RELEASES_DIR")? {
+            self.releases_dir = Some(releases);
         }
         if let Some(log) = parse::<String>("TERESA_LOG")? {
             self.log = log;
@@ -321,6 +339,10 @@ mod tests {
             config.files_path(),
             PathBuf::from("/var/lib/teresa/files"),
             "files default to living beside the database"
+        );
+        assert_eq!(
+            config.releases_path(),
+            PathBuf::from("/var/lib/teresa/releases")
         );
         assert_eq!(config.session_idle(), Duration::from_secs(7 * 24 * 60 * 60));
         config.validate().expect("must validate");

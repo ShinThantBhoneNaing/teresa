@@ -80,6 +80,10 @@ fn help(frame: &mut Frame<'_>, app: &App, area: Rect) {
             txt("pull a file — asks where to save"),
         ]),
         Line::from(vec![
+            key("/cancel [all]"),
+            txt("stop a send/download (Ctrl+X, or click ✖)"),
+        ]),
+        Line::from(vec![
             key("/downloads [dir]"),
             txt("show or set the default folder"),
         ]),

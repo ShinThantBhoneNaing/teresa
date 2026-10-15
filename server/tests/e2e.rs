@@ -615,3 +615,94 @@ async fn an_admin_removes_an_account_over_the_wire() {
     let names: Vec<&str> = users.iter().map(|u| u.username.as_str()).collect();
     assert_eq!(names, ["friday"], "bob is gone from the list");
 }
+
+#[tokio::test]
+async fn client_builds_are_served_for_self_update() {
+    use sha2::{Digest, Sha256};
+
+    let releases = tempfile::tempdir().expect("releases dir");
+    let binary = b"#!/bin/sh\necho new teresa\n";
+    let sha = format!("{:x}", Sha256::digest(binary));
+    std::fs::write(releases.path().join("teresa-linux-x86_64"), binary).unwrap();
+    std::fs::write(
+        releases.path().join("manifest.json"),
+        serde_json::json!({
+            "build": "2026-10-15.abc1234",
+            "platforms": {
+                "linux-x86_64": {"file": "teresa-linux-x86_64", "sha256": sha, "size": binary.len()},
+                "linux-evil": {"file": "../teresa.db", "sha256": sha, "size": 1}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let dir = releases.path().to_path_buf();
+    let server = TestServer::spawn_with(|c| c.releases_dir = Some(dir)).await;
+    let http = reqwest::Client::new();
+
+    let latest: teresa_proto::ClientRelease = http
+        .get(format!("{}/client/latest", server.http))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(latest.build, "2026-10-15.abc1234");
+
+    let download = http
+        .get(format!("{}/client/download/linux-x86_64", server.http))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    assert_eq!(download.headers()["x-teresa-sha256"], sha.as_str());
+    assert_eq!(download.bytes().await.unwrap().as_ref(), binary);
+
+    let missing = http
+        .get(format!("{}/client/download/plan9-mips", server.http))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+
+    let escape = http
+        .get(format!("{}/client/download/linux-evil", server.http))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !escape.status().is_success(),
+        "a manifest path out of the dir is refused"
+    );
+
+    let root = server.http.trim_end_matches("/api/v1");
+    let script = http
+        .get(format!("{root}/install.sh"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        script.contains(&format!("BASE=\"{root}\"")),
+        "installer points back at the node"
+    );
+    assert!(!script.contains("__TERESA_BASE__"));
+}
+
+#[tokio::test]
+async fn a_node_without_client_builds_says_so() {
+    let releases = tempfile::tempdir().expect("releases dir");
+    let dir = releases.path().to_path_buf();
+    let server = TestServer::spawn_with(|c| c.releases_dir = Some(dir)).await;
+    let status = reqwest::get(format!("{}/client/latest", server.http))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 404);
+}

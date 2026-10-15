@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod files;
 pub mod health;
+pub mod releases;
 pub mod ws;
 
 use std::time::Duration;
@@ -30,6 +31,10 @@ pub fn router(state: SharedState) -> Router {
     let transfer = Router::new()
         .route("/api/v1/rooms/{room}/files", post(files::upload))
         .route("/api/v1/files/{id}", get(files::download))
+        .route(
+            "/api/v1/client/download/{platform}",
+            get(releases::download),
+        )
         .layer(DefaultBodyLimit::disable());
 
     let rest = Router::new()
@@ -38,6 +43,10 @@ pub fn router(state: SharedState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/healthz", get(health::healthz))
         .route("/api/v1/metrics", get(health::metrics))
+        .route("/api/v1/client/latest", get(releases::latest))
+        // Outside /api/v1: these are typed by people, so they stay short.
+        .route("/install.sh", get(releases::install_sh))
+        .route("/install.ps1", get(releases::install_ps1))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(15),

@@ -7,11 +7,16 @@
 //! are stored, not recompressed) and a folder again on the way in. Every
 //! download is hashed as it lands and checked against the SHA-256 the server
 //! computed on upload before it is given its final name.
+//!
+//! Any transfer can be cancelled by id: the task stops where it is, the
+//! connection drops (so the server discards a half upload and posts no card),
+//! and temporary files on this side are removed.
 
+use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
@@ -20,6 +25,7 @@ use teresa_proto::{FileCard, FileKind, Message, MessageKind, RoomId};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::ClientConfig;
 
@@ -68,6 +74,8 @@ pub enum Stage {
     Done(Outcome),
     /// Gave up; the reason is human text.
     Failed(String),
+    /// Stopped on request; nothing was published or saved.
+    Cancelled,
 }
 
 /// How a transfer ended well.
@@ -88,6 +96,9 @@ pub struct TransferUpdate {
     pub stage: Stage,
 }
 
+/// Message used internally when a task notices it was cancelled.
+const CANCELLED: &str = "cancelled";
+
 /// The transfer client: base URL, bearer token, and an HTTP client with no
 /// overall deadline — a large file is allowed to take as long as it takes.
 #[derive(Debug, Clone)]
@@ -95,6 +106,8 @@ pub struct TransferClient {
     base: String,
     token: String,
     http: reqwest::Client,
+    /// Cancel handles of the running transfers, by id.
+    running: Arc<Mutex<HashMap<u64, CancellationToken>>>,
 }
 
 impl TransferClient {
@@ -113,7 +126,52 @@ impl TransferClient {
                 .tcp_nodelay(true)
                 .build()
                 .expect("reqwest client builds"),
+            running: Arc::default(),
         }
+    }
+
+    /// Stops a running transfer. Unknown or finished ids are ignored.
+    ///
+    /// # Panics
+    /// Never in practice: the lock is held only for map inserts and removes,
+    /// which cannot panic.
+    pub fn cancel(&self, id: u64) {
+        if let Some(token) = self.running.lock().expect("lock").get(&id) {
+            token.cancel();
+        }
+    }
+
+    /// Runs one transfer task: registers its cancel handle, races the work
+    /// against it, and reports the ending. Cancelling drops the work future,
+    /// which closes the connection; [`TempFile`] guards clean up the disk.
+    fn spawn_task<F>(
+        &self,
+        id: u64,
+        updates: mpsc::Sender<TransferUpdate>,
+        work: impl FnOnce(Self, Reporter) -> F,
+    ) where
+        F: std::future::Future<Output = Result<Outcome, String>> + Send + 'static,
+    {
+        let cancel = CancellationToken::new();
+        self.running
+            .lock()
+            .expect("lock")
+            .insert(id, cancel.clone());
+        let reporter = Reporter::new(id, updates, cancel.clone());
+        let task = work(self.clone(), reporter.clone());
+        let running = self.running.clone();
+        tokio::spawn(async move {
+            let stage = tokio::select! {
+                result = task => match result {
+                    Ok(outcome) => Stage::Done(outcome),
+                    Err(_) if cancel.is_cancelled() => Stage::Cancelled,
+                    Err(error) => Stage::Failed(error),
+                },
+                () = cancel.cancelled() => Stage::Cancelled,
+            };
+            running.lock().expect("lock").remove(&id);
+            reporter.finish(stage).await;
+        });
     }
 
     /// Spawns an upload of `path` into `room`. Folders are always zipped;
@@ -126,14 +184,11 @@ impl TransferClient {
         zip: bool,
         updates: mpsc::Sender<TransferUpdate>,
     ) {
-        let client = self.clone();
-        tokio::spawn(async move {
-            let reporter = Reporter::new(id, updates);
-            let stage = match client.upload(room, &path, zip, &reporter).await {
-                Ok(card) => Stage::Done(Outcome::Shared(card)),
-                Err(error) => Stage::Failed(error),
-            };
-            reporter.finish(stage).await;
+        self.spawn_task(id, updates, move |client, reporter| async move {
+            client
+                .upload(room, &path, zip, &reporter)
+                .await
+                .map(Outcome::Shared)
         });
     }
 
@@ -145,14 +200,11 @@ impl TransferClient {
         dest: PathBuf,
         updates: mpsc::Sender<TransferUpdate>,
     ) {
-        let client = self.clone();
-        tokio::spawn(async move {
-            let reporter = Reporter::new(id, updates);
-            let stage = match client.download(&card, &dest, &reporter).await {
-                Ok(path) => Stage::Done(Outcome::Saved(path)),
-                Err(error) => Stage::Failed(error),
-            };
-            reporter.finish(stage).await;
+        self.spawn_task(id, updates, move |client, reporter| async move {
+            client
+                .download(&card, &dest, &reporter)
+                .await
+                .map(Outcome::Saved)
         });
     }
 
@@ -176,24 +228,27 @@ impl TransferClient {
             } else {
                 FileKind::Zip
             };
-            let temp = std::env::temp_dir().join(format!(
+            let temp = TempFile(std::env::temp_dir().join(format!(
                 "teresa-{}-{}.zip",
                 std::process::id(),
                 reporter.id
-            ));
+            )));
             let source = path.to_path_buf();
-            let target = temp.clone();
+            let target = temp.0.clone();
             let progress = reporter.clone();
             let entries = tokio::task::spawn_blocking(move || pack(&source, &target, &progress))
                 .await
                 .map_err(|e| format!("packing crashed: {e}"))?
                 .map_err(|e| {
-                    let _ = std::fs::remove_file(&temp);
-                    format!("packing failed: {e}")
+                    if reporter.cancelled() {
+                        CANCELLED.to_owned()
+                    } else {
+                        format!("packing failed: {e}")
+                    }
                 })?;
             let entries = (kind == FileKind::Folder).then_some(entries);
             (
-                temp.clone(),
+                temp.0.clone(),
                 format!("{source_name}.zip"),
                 kind,
                 entries,
@@ -208,9 +263,7 @@ impl TransferClient {
         let result = self
             .send(room, &wire_path, &name, kind, entries, reporter)
             .await;
-        if let Some(temp) = temp {
-            let _ = tokio::fs::remove_file(temp).await;
-        }
+        drop(temp); // removes the zip, also when this future is dropped mid-send
         result
     }
 
@@ -302,35 +355,31 @@ impl TransferClient {
 
         // Land beside the destination under a temporary name, so a half
         // transfer never masquerades as a finished one.
-        let partial = dest.join(format!(".{}.{}.part", card.landing_name(), card.id));
-        let digest = match receive(response, &partial, total, reporter).await {
-            Ok(digest) => digest,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&partial).await;
-                return Err(error);
-            }
-        };
+        // The guard deletes it on every way out but success, including a
+        // cancel that drops this future mid-download.
+        let partial = TempFile(dest.join(format!(".{}.{}.part", card.landing_name(), card.id)));
+        let digest = receive(response, &partial.0, total, reporter).await?;
 
         reporter.force(Stage::Verifying);
         if !digest.eq_ignore_ascii_case(&card.sha256) {
-            let _ = tokio::fs::remove_file(&partial).await;
             return Err("integrity check failed — sha256 mismatch, file discarded".to_owned());
         }
 
         let destination = unique_path(dest, card.landing_name());
         if card.kind == FileKind::Folder {
             reporter.force(Stage::Unpacking);
-            let archive = partial.clone();
+            let archive = partial.0.clone();
             let target = destination.clone();
             let unpacked = tokio::task::spawn_blocking(move || unpack(&archive, &target))
                 .await
                 .map_err(|e| format!("unpacking crashed: {e}"))?;
-            let _ = tokio::fs::remove_file(&partial).await;
+            drop(partial);
             unpacked.map_err(|e| format!("unpacking failed: {e}"))?;
         } else {
-            tokio::fs::rename(&partial, &destination)
+            tokio::fs::rename(&partial.0, &destination)
                 .await
                 .map_err(|e| format!("{}: {e}", destination.display()))?;
+            std::mem::forget(partial); // landed under its real name
         }
         Ok(destination)
     }
@@ -390,13 +439,15 @@ struct Reporter {
     id: u64,
     updates: mpsc::Sender<TransferUpdate>,
     last: Arc<std::sync::Mutex<Instant>>,
+    cancel: CancellationToken,
 }
 
 impl Reporter {
-    fn new(id: u64, updates: mpsc::Sender<TransferUpdate>) -> Self {
+    fn new(id: u64, updates: mpsc::Sender<TransferUpdate>, cancel: CancellationToken) -> Self {
         Self {
             id,
             updates,
+            cancel,
             last: Arc::new(std::sync::Mutex::new(
                 Instant::now()
                     .checked_sub(REPORT_EVERY)
@@ -416,6 +467,12 @@ impl Reporter {
         }
     }
 
+    /// Whether the user asked this transfer to stop. Checked by the blocking
+    /// packer, which a dropped future cannot interrupt.
+    fn cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
     /// Reports a stage change unconditionally (still non-blocking).
     fn force(&self, stage: Stage) {
         *self.last.lock().expect("reporter lock is never poisoned") = Instant::now();
@@ -428,6 +485,17 @@ impl Reporter {
             .updates
             .send(TransferUpdate { id: self.id, stage })
             .await;
+    }
+}
+
+/// A temporary file deleted when dropped — on error, on cancel, or when the
+/// owning future is dropped. `mem::forget` keeps one that became the result.
+#[derive(Debug)]
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -494,6 +562,14 @@ fn pack(source: &Path, target: &Path, reporter: &Reporter) -> std::io::Result<u3
             let read = input.read(&mut buffer)?;
             if read == 0 {
                 break;
+            }
+            if reporter.cancelled() {
+                // The awaiting future is gone, so its guard may already have
+                // run; remove the archive here too (Windows cannot delete a
+                // file that is still open).
+                drop(zip);
+                let _ = std::fs::remove_file(target);
+                return Err(std::io::Error::other(CANCELLED));
             }
             zip.write_all(&buffer[..read])?;
             done += read as u64;
@@ -724,7 +800,7 @@ mod tests {
 
     fn reporter() -> (Reporter, mpsc::Receiver<TransferUpdate>) {
         let (tx, rx) = mpsc::channel(1024);
-        (Reporter::new(7, tx), rx)
+        (Reporter::new(7, tx, CancellationToken::new()), rx)
     }
 
     #[test]

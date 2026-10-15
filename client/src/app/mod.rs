@@ -299,6 +299,11 @@ pub enum Effect {
         /// The folder to save it in; created if missing.
         dest: PathBuf,
     },
+    /// Stop a running upload or download.
+    CancelTransfer {
+        /// The transfer's id.
+        id: u64,
+    },
 }
 
 /// The whole application.
@@ -349,6 +354,9 @@ pub struct App {
     pub transfers: Vec<Transfer>,
     /// Monotonic source for transfer ids.
     pub next_transfer: u64,
+    /// Where the transfer dock was last drawn, so a click can find the
+    /// cancel button it landed on. Written by the renderer.
+    pub dock_area: std::cell::Cell<ratatui::layout::Rect>,
     /// `/send @user` requests waiting for their DM room.
     pub pending_dm_sends: Vec<PendingDmSend>,
     /// Effects for the main loop, drained every iteration.
@@ -387,6 +395,7 @@ impl App {
             unseen_activity: false,
             transfers: Vec::new(),
             next_transfer: 1,
+            dock_area: std::cell::Cell::default(),
             pending_dm_sends: Vec::new(),
             effects: Vec::new(),
             dirty: true,

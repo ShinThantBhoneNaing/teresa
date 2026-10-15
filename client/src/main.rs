@@ -4,7 +4,7 @@
 //! mode, the tokio runtime, and the wiring between threads. Everything with
 //! logic in it lives in `teresa_client` and is tested there.
 
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -23,6 +23,7 @@ use teresa_client::config::ClientConfig;
 use teresa_client::intro::Intro;
 use teresa_client::net::http::{AuthClient, AuthError};
 use teresa_client::net::transfer::{TransferClient, TransferUpdate};
+use teresa_client::net::update::{self as self_update, Updater};
 use teresa_client::net::ws::{self, NetEvent};
 use teresa_client::session::Session;
 use teresa_client::ui;
@@ -56,10 +57,13 @@ struct Args {
 enum CliCommand {
     /// Revoke the stored session and forget it.
     Logout,
+    /// Install the newest client build from the server — no cargo needed.
+    Update,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    self_update::cleanup_previous();
 
     // One TLS/CSPRNG backend, chosen before any network code runs.
     rustls::crypto::ring::default_provider()
@@ -103,9 +107,96 @@ fn main() -> anyhow::Result<()> {
 
     match args.command {
         Some(CliCommand::Logout) => runtime.block_on(logout(&config)),
+        Some(CliCommand::Update) => runtime.block_on(update_now(&config)),
         None => {
+            runtime.block_on(offer_update(&config));
             let session = runtime.block_on(ensure_session(&config))?;
             runtime.block_on(run(config, config_path, session))
+        }
+    }
+}
+
+// --- self-update (plain terminal, before the TUI) --------------------------
+
+/// `teresa update`: install the node's client build if it differs from ours.
+async fn update_now(config: &ClientConfig) -> anyhow::Result<()> {
+    let updater = Updater::new(config);
+    let release = match updater.latest(Duration::from_secs(10)).await {
+        Ok(Some(release)) => release,
+        Ok(None) => anyhow::bail!("{} hosts no client builds yet", config.server),
+        Err(error) => anyhow::bail!("cannot ask {} for updates: {error}", config.server),
+    };
+    if release.build == self_update::BUILD {
+        println!("✦ teresa is up to date (build {}).", release.build);
+        return Ok(());
+    }
+    install_and_report(&updater, &release).await?;
+    println!("  run teresa again to use it.");
+    Ok(())
+}
+
+/// On launch: if the node has a newer build, offer it and relaunch into it.
+/// Silent when there is nothing to say — no node, no builds, a dev build, or
+/// no human at the terminal to answer.
+async fn offer_update(config: &ClientConfig) {
+    if self_update::BUILD == "dev" || !std::io::stdin().is_terminal() {
+        return;
+    }
+    let updater = Updater::new(config);
+    let Ok(Some(release)) = updater.latest(Duration::from_secs(2)).await else {
+        return;
+    };
+    if !self_update::is_update(&release) {
+        return;
+    }
+    println!(
+        "✦ a new teresa is out (build {}, you have {}).",
+        release.build,
+        self_update::BUILD
+    );
+    let Ok(answer) = prompt_line("  update now? [Y/n] ") else {
+        return;
+    };
+    if !matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes") {
+        return;
+    }
+    match install_and_report(&updater, &release).await {
+        Ok(exe) => {
+            let error = relaunch(&exe);
+            eprintln!("  could not restart into the new build ({error}); run teresa again.");
+            std::process::exit(1);
+        }
+        Err(error) => {
+            eprintln!("  update failed: {error:#}\n  carrying on with the current build.")
+        }
+    }
+}
+
+async fn install_and_report(
+    updater: &Updater,
+    release: &teresa_proto::ClientRelease,
+) -> anyhow::Result<PathBuf> {
+    println!("✦ downloading build {}…", release.build);
+    let exe = updater.install(release).await?;
+    println!("✦ updated {} to build {}.", exe.display(), release.build);
+    Ok(exe)
+}
+
+/// Replaces this process with the freshly installed binary, same arguments.
+/// Only returns on failure.
+fn relaunch(exe: &std::path::Path) -> std::io::Error {
+    let mut command = std::process::Command::new(exe);
+    command.args(std::env::args_os().skip(1));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.exec()
+    }
+    #[cfg(not(unix))]
+    {
+        match command.status() {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => error,
         }
     }
 }
@@ -407,6 +498,7 @@ async fn run(config: ClientConfig, config_path: PathBuf, session: Session) -> an
                 Effect::Download { id, card, dest } => {
                     transfers.spawn_download(id, card, dest, transfer_tx.clone());
                 }
+                Effect::CancelTransfer { id } => transfers.cancel(id),
                 Effect::Logout => {
                     auth.logout(&session.token).await;
                     if let Err(error) = Session::clear(&Session::default_path()) {
